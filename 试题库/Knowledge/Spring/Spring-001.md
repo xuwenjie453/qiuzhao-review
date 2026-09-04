@@ -46,7 +46,7 @@ prototype 循环依赖无法解决：每次都要新实例，提前曝光的引�
 Spring AOP 的原理？切面在什么时机织入？
 
 **答案：**
-Spring AOP 是运行期代理实现：容器为匹配切点的 Bean 生成代理（JDK 接口代理或 CGLIB 子类代理，Boot 2.x 起默认 CGLIB），织入发生在 Bean 初始化完成后的 BeanPostProcessor 阶段（AnnotationAwareAspectJAutoProxyCreator）。五类通知执行顺序：@Around 包裹前后、@Before 目标方法前、@AfterReturning/@AfterThrowing 正常/异常后、@After（finally）——同一切面内顺序为 Around前→Before→业务→After→AfterReturning/Throwing→Around后；多个切面按 Order 排序外层先执行。切点表达式 @annotation(自定义注解) 是业务切面最常用姿势。
+Spring AOP 是运行期代理实现：容器为匹配切点的 Bean 生成代理（JDK 接口代理或 CGLIB 子类代理，Boot 2.x 起默认 CGLIB），织入发生在 Bean 初始化完成后的 BeanPostProcessor 阶段（AnnotationAwareAspectJAutoProxyCreator）。五类通知执行顺序：@Around 包裹前后、@Before 目标方法前、@AfterReturning/@AfterThrowing 正常/异常后、@After（finally）——Spring 5.2.7 起按 AspectJ 语义，同一切面内顺序为 Around前→Before→业务→AfterReturning/Throwing→After→Around后（5.2.7 之前 @After 在 @AfterReturning 之前）；多个切面按 Order 排序外层先执行。切点表达式 @annotation(自定义注解) 是业务切面最常用姿势。
 
 **解析：**
 拦截器链机制：代理方法调用 → 创建 ReflectiveMethodInvocation → 按 order 排序的 MethodInterceptor 链 → proceed() 递归推进（责任链）。@Around 内部必须调 proceed()，忘调则目标方法不执行且不报错——高频坑。

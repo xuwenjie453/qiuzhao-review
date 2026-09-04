@@ -11,6 +11,8 @@ class Solution:
     # 解法一：O(n^2) DP，dp[i] = 以 nums[i] 结尾的最长递增子序列长度
     def lengthOfLIS(self, nums):
         n = len(nums)
+        if n == 0:                          # 边界：空数组直接返回 0，避免 max([]) 抛错
+            return 0
         dp = [1] * n
         for i in range(n):
             for j in range(i):

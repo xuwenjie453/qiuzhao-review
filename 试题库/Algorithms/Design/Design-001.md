@@ -563,8 +563,7 @@ function myInterval(fn, interval, ...args) {
 ```
 
 **解析：**
-递归 setTimeout 在每次 fn 执行完毕后再设下一次定时，避免 setInterval 的任务堆积与间隔漂移，并返回 clear 闭包实现取消。
-
+注释"节奏更稳不漂移"有歧义：递归 setTimeout 的相邻间隔约为 interval + fn 执行时长，相对绝对时间仍会逐次后移（漂移）；其真正优点是不会像 setInterval 那样任务堆积。
 
 ### Design-001-016 | ★★★★☆
 
@@ -617,7 +616,6 @@ function LazyMan(name) {
 // LazyMan('Hank').eat('lunch').sleep(2).eat('dinner')  按序输出
 // LazyMan('Hank').sleepFirst(5).eat('supper')  先睡 5 秒再打招呼
 ```
-
 **解析：**
 三个关键点：每个方法 return this 支持链式调用、所有行为先作为任务入队、构造器用 setTimeout(0) 等同步收集结束后逐个消费；sleepFirst 用 unshift 插队到队首。
 
@@ -667,7 +665,6 @@ class EventEmitter {
 // 追问：与观察者模式的区别 —— 发布-订阅有事件中心解耦，发布者/订阅者互不感知；
 // 观察者模式中目标直接持有并通知观察者，两者耦合。
 ```
-
 **解析：**
 Map 存事件到监听器数组的映射；once 用包装器先 off 再执行、_origin 支持按原函数取消；emit 拷贝数组遍历防止遍历中修改；与观察者模式的区别在于有无事件中心解耦。
 

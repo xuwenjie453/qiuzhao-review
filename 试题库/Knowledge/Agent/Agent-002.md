@@ -67,7 +67,7 @@ Tools是可被调用的外部能力单元（搜索、API、代码执行等）；
 Agent推理模式有哪些？ReAct是啥？具体是怎么实现的？
 
 **答案：**
-ReAct是Reasoning+Acting交替的范式：模型先思考（Thought）再行动（Action）观察结果（Observation）循环执行。
+常见推理模式：CoT（思维链单次推理）、ReAct（推理-行动交替）、Plan-and-Execute（先全局规划再逐步执行）、Reflection/Reflexion（自我反思迭代改进）、ToT（树搜索多条推理路径）、工具增强推理等。ReAct实现：在prompt中给出任务、可用工具清单和Thought/Action/Observation格式约定；模型每轮输出Thought（分析）+Action（工具名与参数），运行时解析Action并实际执行工具，将结果作为Observation追加进上下文，循环迭代直到模型输出Final Answer或达到最大步数/终止条件。
 
 
 ### Agent-002-010 | ★★★★☆

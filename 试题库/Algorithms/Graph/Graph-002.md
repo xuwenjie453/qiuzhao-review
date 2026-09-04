@@ -66,6 +66,8 @@ class Solution:
 class Solution:
     def maxAreaOfIsland(self, grid):
         '''岛屿最大面积：遍历每个格子做 DFS 统计连通块大小，取最大值'''
+        if not grid or not grid[0]:         # 边界：空网格直接返回 0，避免取 grid[0] 越界
+            return 0
         m, n = len(grid), len(grid[0])
 
         def dfs(i, j):

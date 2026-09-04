@@ -363,23 +363,22 @@ import sys
 from collections import deque
 
 class T:
-    __slots__ = ("l", "r")
-    def __init__(self):
-        self.l = None
-        self.r = None
+    __slots__ = ("v", "l", "r")
+    def __init__(self, v):
+        self.v = v; self.l = None; self.r = None
 
 def build(seq):
     n = len(seq)
     if n == 0 or seq[0] == -1:
         return None
-    root = T(); dq = deque([root]); idx = 1
+    root = T(seq[0]); dq = deque([root]); idx = 1
     while dq and idx < n:
         node = dq.popleft()
         for attr in ("l", "r"):
             if idx < n:
                 v = seq[idx]; idx += 1
                 if v != -1:
-                    ch = T(); setattr(node, attr, ch); dq.append(ch)
+                    ch = T(v); setattr(node, attr, ch); dq.append(ch)
     return root
 
 def is_mirror(a, b):
@@ -387,7 +386,7 @@ def is_mirror(a, b):
         return True
     if a is None or b is None:
         return False
-    return is_mirror(a.l, b.r) and is_mirror(a.r, b.l)
+    return a.v == b.v and is_mirror(a.l, b.r) and is_mirror(a.r, b.l)
 
 def solve():
     data = sys.stdin.read().split()

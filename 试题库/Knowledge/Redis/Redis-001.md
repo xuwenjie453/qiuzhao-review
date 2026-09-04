@@ -207,7 +207,7 @@ Pipeline、事务、Lua 三者的批量与原子性差异？
 Redis 6 的 ACL 与生产权限管理
 
 **答案：**
-老版本只有一个 requirepass+危险命令靠 rename 关闭；Redis 6 引入 ACL：多用户、按命令类别（read/write/dangerous 等）与 key pattern 授权，`ACL SETUSER app_user on >密码 ~order:* +read +write -@dangerous`。生产基线：应用账号最小权限（只允许用到的前缀与命令）、禁用 FLUSHALL/KEYS/CONFIG 于业务账号、默认用户 off、网络层再叠加内网隔离与 TLS。这把"共享 root 密码"的老问题升级为可审计的权限体系。
+老版本只有一个 requirepass+危险命令靠 rename 关闭；Redis 6 引入 ACL：多用户、按命令类别（read/write/dangerous 等）与 key pattern 授权，`ACL SETUSER app_user on >密码 ~order:* +@read +@write -@dangerous`（read/write 是命令类别，需 @ 前缀）。生产基线：应用账号最小权限（只允许用到的前缀与命令）、禁用 FLUSHALL/KEYS/CONFIG 于业务账号、默认用户 off、网络层再叠加内网隔离与 TLS。这把"共享 root 密码"的老问题升级为可审计的权限体系。
 
 **解析：**
 类别速记：@read @write @connection @dangerous @admin；key pattern 限定可访问键前缀，天然隔离多业务共用实例。审计：ACL LOG 记录被拒命令。迁移路径：requirepass 时代→ACL 多用户→每应用独立账号+前缀隔离。云托管 Redis 通常提供账号体系替代。

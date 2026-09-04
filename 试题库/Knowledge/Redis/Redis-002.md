@@ -147,7 +147,7 @@ ZSet以到期时间戳为score，轮询zrangebyscore取出到期任务执行；�
 什么是Redis的bigkey（大Key）？有什么危害，怎么处理？
 
 **答案：**
-value过大或集合元素过多的key；危害：单线程阻塞、网络拥塞、删除卡顿、集群数据倾斜。用redis-cli --bigkey扫描，拆分数据、异步unlink删除。
+value过大或集合元素过多的key；危害：单线程阻塞、网络拥塞、删除卡顿、集群数据倾斜。用redis-cli --bigkeys 扫描，拆分数据、异步unlink删除。
 
 
 ### Redis-002-020 | ★★★★★

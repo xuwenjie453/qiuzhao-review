@@ -61,21 +61,27 @@ class ListNode:
 
 class Solution:
     def reverseKGroup(self, head: ListNode, k: int) -> ListNode:
-        # 1. 检查本组是否够 k 个节点，不够则保持原序直接返回
-        node = head
-        for _ in range(k):
-            if not node:
-                return head
-            node = node.next
-        # 2. 递归处理从 node 开始的后续部分，prev 为下一组翻转后的新头
-        prev = self.reverseKGroup(node, k)
-        # 3. 头插式翻转本组 k 个节点，逐个接到 prev 前面
-        cur = head
-        for _ in range(k):
-            nxt = cur.next
-            cur.next = prev
-            prev, cur = cur, nxt
-        return prev  # 本组原尾节点即新头
+        # 迭代实现：n=5000、k 较小时 n/k 层递归会超出 Python 默认递归栈，改为迭代
+        dummy = ListNode(0, head)
+        prev = dummy                     # 上一组翻转后的尾节点（也是本组的前驱）
+        while True:
+            # 1. 检查本组是否够 k 个节点，不够则保持原序直接返回
+            node = prev
+            for _ in range(k):
+                node = node.next
+                if not node:
+                    return dummy.next
+            # 2. 头插式翻转本组 k 个节点：逐个摘下插到 prev 后面
+            tail = prev.next             # 本组原头节点，翻转后成为组尾
+            cur = tail.next
+            for _ in range(k - 1):
+                nxt = cur.next           # 暂存后继
+                cur.next = prev.next     # 头插到本组头部
+                prev.next = cur
+                cur = nxt
+            tail.next = cur              # 原头节点接回下一组的开头（或 None），防成环
+            # 3. prev 移到本组新尾（原头节点），继续处理下一组
+            prev = tail
 ```
 
 **解析：**
@@ -172,8 +178,7 @@ class Solution:
 ```
 
 **解析：**
-快慢指针相遇后把一指针放回头部，与相遇点同速前进，再次相遇即入环点（由 a=c 推出）；不修改链表、O(n)/O(1)。
-
+注释"由 2(a+b)=a+b+n(b+c) 推出 a=c"不够严谨：严格为 a = c + (n-1)(b+c)，即 a 比 c 多整若干圈；两指针同速前进时整圈部分自动抵消，入环点结论不变。
 
 ### LinkedList-002-006 | ★★★★☆
 
@@ -197,7 +202,6 @@ class Solution:
             b = b.next if b else headA
         return a
 ```
-
 **解析：**
 双指针走完自己的链表就切换到另一条头部，总路程相等抵消长度差，相交处相遇、不相交则同时为 None 退出；O(m+n)/O(1)，不破坏链表结构。
 
