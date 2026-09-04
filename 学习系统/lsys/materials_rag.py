@@ -14,7 +14,10 @@ EMBED_DIM = 256
 MAX_CHUNKS_PER_DOC = 3000
 TEXT_EXTS = {'.md', '.txt', '.markdown'}
 PDF_EXTS = {'.pdf'}
-SKIP_DIRS = {'index', '__MACOSX'}
+SKIP_DIRS = {'index', '__MACOSX', 'pictures'}
+# 内容政策: 只索引知识内容; 排除模拟题/试题类与 README 等管理文件
+SKIP_NAME_PATTERNS = ('模拟题', '高难度模拟题', '真题')
+SKIP_NAMES_EXACT = {'readme.md', 'readme.txt'}
 
 
 # ---------- embedding ----------
@@ -112,6 +115,10 @@ def scan_files() -> list:
     for root, dirs, files in os.walk(MATERIALS_DIR):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for f in files:
+            if f.lower() in SKIP_NAMES_EXACT:
+                continue
+            if any(p in f for p in SKIP_NAME_PATTERNS):
+                continue
             ext = os.path.splitext(f)[1].lower()
             if ext in TEXT_EXTS | PDF_EXTS:
                 out.append(os.path.join(root, f))
