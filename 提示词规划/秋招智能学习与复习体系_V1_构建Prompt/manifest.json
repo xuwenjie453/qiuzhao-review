@@ -1,0 +1,25 @@
+{
+  "name": "秋招智能学习与复习体系 V1 构建 Prompt",
+  "version": "1.0",
+  "files": [
+    "00-总控构建Prompt.md",
+    "01-架构冻结与目录边界.md",
+    "02-SQLite-Schema与事件系统.md",
+    "03-资料库Hybrid-RAG构建Prompt.md",
+    "04-Goal-Compiler构建Prompt.md",
+    "05-Temporal-Scheduler构建Prompt.md",
+    "06-Knowledge-Engine构建Prompt.md",
+    "07-Algorithms-Engine构建Prompt.md",
+    "08-Projects-Engine构建Prompt.md",
+    "09-Review-Probe-Compiler构建Prompt.md",
+    "10-Review-Engine构建Prompt.md",
+    "11-Expansion-Hub构建Prompt.md",
+    "12-25天Coverage-Goal-Bootstrap.md",
+    "13-Session-UX-QA恢复.md",
+    "14-端到端集成验收Prompt.md",
+    "15-实现依据与外部规范.md",
+    "README.md",
+    "主Prompt_纯文本.txt"
+  ],
+  "purpose": "Build the V1 goal-aware adaptive learning and review system."
+}
