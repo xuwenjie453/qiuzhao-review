@@ -1,0 +1,31 @@
+{
+  "name": "秋招智能学习与复习体系 Runtime Prompt",
+  "version": "1.0",
+  "type": "runtime_prompt_package",
+  "purpose": "Allow a new AI agent in Codex/ZCode-style environments to operate the completed learning/review system correctly through dialogue.",
+  "files": [
+    "00-运行总控Prompt.md",
+    "01-新AI启动与系统接管.md",
+    "02-开始学习.md",
+    "03-Knowledge学习运行Prompt.md",
+    "04-Algorithms学习运行Prompt.md",
+    "05-Projects学习运行Prompt.md",
+    "06-Review运行Prompt.md",
+    "07-Temporal-Scheduler运行Prompt.md",
+    "08-Review-Capsule生成Prompt.md",
+    "09-学习事件记录规范.md",
+    "10-创建与调整Goal.md",
+    "11-扩展资料库.md",
+    "12-题库扩展入口规范.md",
+    "13-会话中断与恢复.md",
+    "14-数据库读写与QA.md",
+    "15-自然语言控制协议.md",
+    "16-典型学习会话示例.md",
+    "17-典型复习会话示例.md",
+    "18-快捷入口Prompt.md",
+    "19-Runtime验收清单.md",
+    "20-外部运行环境说明.md",
+    "AGENTS.md",
+    "README.md"
+  ]
+}

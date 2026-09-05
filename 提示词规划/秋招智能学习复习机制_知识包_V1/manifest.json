@@ -1,0 +1,29 @@
+{
+  "name": "秋招智能学习与复习机制 知识包",
+  "version": "1.0",
+  "type": "knowledge_package",
+  "purpose": "Consolidate all learning, review, memory, scheduling, RAG, flow and expansion mechanisms discussed for the V1 system.",
+  "files": [
+    "00-全局认知模型.md",
+    "01-学习心理学底座.md",
+    "02-Learning与Review分工.md",
+    "03-Knowledge学习机制.md",
+    "04-六级知识块G1-G6.md",
+    "05-知识块生成与Repair机制.md",
+    "06-Algorithms技能学习机制.md",
+    "07-算法学习调用栈与支架.md",
+    "08-Projects工程案例学习机制.md",
+    "09-Review-Capsule与轻量探针.md",
+    "10-算法复习微型探针.md",
+    "11-记忆模型DSR与日期机制.md",
+    "12-Goal-aware时序调度.md",
+    "13-事件溯源与长期状态.md",
+    "14-心流与交互原则.md",
+    "15-资料库RAG与知识提取.md",
+    "16-Expansion与目标机制.md",
+    "17-完整生命周期示例.md",
+    "18-机制冻结清单.md",
+    "19-外部理论依据索引.md",
+    "README.md"
+  ]
+}
