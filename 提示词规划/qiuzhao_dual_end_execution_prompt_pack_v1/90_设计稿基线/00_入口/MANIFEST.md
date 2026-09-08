@@ -1,0 +1,59 @@
+# MANIFEST
+
+共 53 个 Markdown 文件。
+
+| 文件 | 字节 | SHA256 |
+|---|---:|---|
+| `00_入口/00_AI_IMPLEMENTATION_BRIEF.md` | 4688 | `39993e88eda1261aca7a6fc7dd433060f6a8a32a3ef089c2cf576dff13dc7f7b` |
+| `00_入口/01_关键决策摘要.md` | 1780 | `03f01256b40baafc53cc9690287d21a19023d22373a116c38011121e3b46d7fd` |
+| `00_入口/02_术语表.md` | 1348 | `7be33dbe908edb0eb5ea7f951db687462d5f4851a4f44b725cdd0667420c5ac6` |
+| `00_入口/README.md` | 2935 | `eefa325262d479f2536eb90e699ac4bde34e707e5429430f1fe6473f1150cb9c` |
+| `01_产品与领域/01_需求基线与不可违反约束.md` | 2160 | `8e1646d6fe838fe57ef974b17f6f72d28e761b7652b3c2ba8cc46a603007371c` |
+| `01_产品与领域/02_范围与非目标.md` | 1065 | `5a7d56e7b4c37a5fa3ad599f95b7fec488800bcb516f2c20b49a02b9cf6e9c0f` |
+| `01_产品与领域/03_总体架构.md` | 2055 | `00bd8be0ea072529494161d6f1f19d9a72423fec6981d7fd0137e906fdaeb2fc` |
+| `01_产品与领域/04_问题图领域模型.md` | 1882 | `ec83a32582f96f8679fc5c79078fc0cdca2ccec8cc1d7105047590753c244ceb` |
+| `01_产品与领域/05_问题身份与轮次生命周期.md` | 1646 | `09381424be951d2dfa161d1be5e73cdf13ea61f81b4b926fa5cc5c0cc012697b` |
+| `01_产品与领域/06_用户交互语义.md` | 1327 | `f8644740e95a8fea5946f083b47633d2d2ee22f1757b16170956fe87187d1b06` |
+| `02_Mac端/01_Mac守护进程.md` | 1678 | `39b0d7867c2323515c274a4d910e91636c9b29f93d1dedee31fa960243a4f866` |
+| `02_Mac端/02_Agent接入契约.md` | 2048 | `95ca2d2f2ebe35b6bdfaa034e1bb3b859009bade1b9002b7ddf95f017cc455f5` |
+| `02_Mac端/03_问题图命令服务.md` | 1321 | `e816d8daba4b7b0c346caa93b455b4c66005b6a07be2d41b3e7e461385057aeb` |
+| `02_Mac端/04_存储与数据库.md` | 1282 | `fd37af4932ea5b3e279dc85d43c5dbb9dba51d3cf11bb2b0d89873bf789c33ba` |
+| `02_Mac端/05_本机控制API.md` | 854 | `7186459db3ff56b4b2b9fda753b92d51fac1ed1ee08e9a755eaa8f1527ff0b3b` |
+| `03_协议与同步/01_Bonjour自动发现与连接.md` | 1455 | `2052ef0e5ae38360a5d70fb417f0fbf187f2d2ffc424952a21d5e30000522fc3` |
+| `03_协议与同步/02_WebSocket协议总则.md` | 1274 | `0d14826c5c7443ba34633a6388a7132ed8e91f92f6f7632f7ff963c342164c6e` |
+| `03_协议与同步/03_GraphSnapshot与Patch.md` | 1346 | `da4a87349cd198837768fc2d3dec9232a632afa4b0af800bc2bce1c58f8aef13` |
+| `03_协议与同步/04_ClientCommand与冲突处理.md` | 1312 | `a44e756ed2643e780f9c172caac3a5225960e10fe4d69c31dc1017924ad45b4a` |
+| `03_协议与同步/05_离线重连与恢复.md` | 1113 | `159d61de1b6bef334c51f2874501a3d4039306715e245258b36f67a6fa0c226c` |
+| `03_协议与同步/06_自动信任与安全边界.md` | 1350 | `1d67861d5b65981752fa04df91a877cef93f83c12df43e8c97a17c1e88f35165` |
+| `04_iPad端/01_iPad应用架构.md` | 1172 | `7a1fb4a16e3c34e6b9ef157b2d5fbca7cbda4607f19864085f9814aacd2b8b6f` |
+| `04_iPad端/02_问题图Topology设计.md` | 1421 | `06051d2c148f63204d2322ff15aa06538bc73f5a7d1a0c25f81a24f60b734bf4` |
+| `04_iPad端/03_Markdown阅读器.md` | 1922 | `6eada88e541effa88b0ce65d46a3ba09e1ed7ccb79f590e880497ed77a146c90` |
+| `04_iPad端/04_阅读排版Token.md` | 1129 | `5bc2cde270fffb29ac81a4ee1aa0bea9025afdeb81168ab1eb251b4b43cedef8` |
+| `04_iPad端/05_ApplePencil与Ink.md` | 1770 | `b63e652aa6d8bdfb270636bc59a63e0c78e3fdb9351b433dd568a43d665cc4d5` |
+| `04_iPad端/06_iPad本地数据库.md` | 1071 | `c9d1e252375d7443faa17846048b6cfedb488e42dfa0dd57c3fd7383df7a201f` |
+| `04_iPad端/07_连接状态与UX.md` | 764 | `f88061366858e723f4c9a6677a5bab12b27125d38c3cefffd8a3a794f990937d` |
+| `05_集成与迁移/01_与现有qiuzhao-review集成.md` | 1379 | `620b8cbc3518ebedb65e1fd21238772c7705719b541ce293c6528bd943443120` |
+| `05_集成与迁移/02_RuntimePrompt改造.md` | 1081 | `6899c6f4a086e1c5b9724d334abf981cb9e27aefb41f765af92b7374f8326930` |
+| `05_集成与迁移/03_文件级改造清单.md` | 1809 | `2f98e271597bba1e802b1a26d6a957ffc2c81eb3f78fe5ce1a74b2f155442454` |
+| `05_集成与迁移/04_迁移与兼容策略.md` | 971 | `c7e5f5a1e3da746f728fd1517eb2c5319e35ede86c836e201d38d6e93be2c200` |
+| `05_集成与迁移/05_参考reading-system的复用边界.md` | 1150 | `8b202fef4c8390effa275c550b54414023ddf2b4149b398d9e10e7a2bd041b3e` |
+| `06_质量与交付/01_状态机.md` | 967 | `00a86f6c3d624b93a2c496851bbdeffcf3792294dd732492f6a9018e77fe3b97` |
+| `06_质量与交付/02_失败矩阵.md` | 1282 | `0589692a021e2e324b56c651822d3ef0aa76afcd2c6341cf75d1789d21c3dcdf` |
+| `06_质量与交付/03_测试策略.md` | 1431 | `819b694d17b14ae4ad575005525373643cf2f886782de93446d2d76319a04e52` |
+| `06_质量与交付/04_验收标准.md` | 1626 | `e9e8c92d9e635da711b03cf51bc7754478c921faaa38608786536adbb4ebeffa` |
+| `06_质量与交付/05_实施工作拆分.md` | 1231 | `e4baf0758efff4eaad79c92fb5ecd5f1a743988020e29aeae460cac8ee201b93` |
+| `06_质量与交付/06_AI代码审查清单.md` | 944 | `313db9bbcab1d36dfd89b638218dfd107c1b6464df6d3e513fd16e58672ad223` |
+| `07_ADR/ADR-001_仅做双端扩展不重构学习核心.md` | 529 | `1e4b880a1eccdde122b1c98ec309f646ed52efff8f96fb9cfc394d15e3230800` |
+| `07_ADR/ADR-002_问题图采用星型结构.md` | 487 | `d0b9be426408fa508cc3d6cccefe1a73f9ec6f9e0d451bcff675b01d36bdf03e` |
+| `07_ADR/ADR-003_Bonjour加WebSocket且零手动配对.md` | 423 | `ba8a3bafbd91db4b1d33fc1cd95dbb8e1299a653256bda4bb72922a10dfbe095` |
+| `07_ADR/ADR-004_Mac权威_iPad本地优先.md` | 310 | `86ed7a215d1c0ff477021e8a03e6624690d9f658b94585ea5171b0961bed7f26` |
+| `07_ADR/ADR-005_NodeBody不可变.md` | 396 | `5f45d7d05604400071987a2535e2fe107265cbfa55037f462dae1c9e1d22884c` |
+| `07_ADR/ADR-006_Ink采用完整PKDrawing快照.md` | 405 | `35d27786afd13d1d70a5fda3330eddf92ad5953617f983822d082bf5a2e3dd36` |
+| `07_ADR/ADR-007_新建独立DualEnd数据库.md` | 278 | `6c39b2307dc19e7bb27344cdc9a242c226dc6af6fa034e2b4bb19f0103f1e5af` |
+| `07_ADR/ADR-008_Reader固定CanonicalPageWidth.md` | 376 | `08386e6b007e8dd5ec74f7d3b6b7b5268c46f4eed1ae5037c28318b31c3313c1` |
+| `08_附录/00_原始用户需求汇总.md` | 9381 | `f4a3c04114f368ca99983674b9260e28261ce50fe9d2a333e4942d412b8b0e14` |
+| `08_附录/01_SQL_Schema_v1.md` | 2633 | `d742b906cbd4ff56a599ef9d2aadfd079b77af3175bd75159f620e5e1c1a9f48` |
+| `08_附录/02_协议样例.md` | 1616 | `d4ad3cb1bce999abb88193c3815a329f4f4680d87e8ee58598bb214b5a042510` |
+| `08_附录/03_需求到设计追踪矩阵.md` | 1269 | `35f77d75a3bca0c868845a74827ed5375a07cda02d4e8a0d2c635819c7ebfc72` |
+| `08_附录/04_来源与外部依据.md` | 2016 | `cae4539316a0e4b3468f6ab8cba59400a1d036f36611bbab9d8728ff95b8cf7a` |
+| `08_附录/05_实现时禁止自行决策的事项.md` | 811 | `52ec0a55fcf813d322c959f72bf6e374f865bfcd0cf1bbb96c48f73a7b750d95` |

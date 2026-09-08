@@ -1,0 +1,16 @@
+{
+  "name": "qiuzhao-dual-end-mac",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "秋招复习体系 双端伴生守护进程 (QuestionGraph canonical store + Bonjour/WebSocket bridge)",
+  "bin": {
+    "qreview-dual": "./bin/qreview-dual.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "test": "node --test test/graph.test.mjs test/bridge-e2e.test.mjs test/fixtures.test.mjs"
+  }
+}

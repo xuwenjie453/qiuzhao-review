@@ -83,6 +83,14 @@ Goal Stack ──→ Temporal Scheduler ──→ 下一项 TaskIntent
 | 事件事实性 | Events 是事实、States 是可重放投影；Repair 后答对**必须保留原失败事件再追加 REPAIR_SUCCESS**；不伪造成功 |
 | 数据库边界 | scheduler / Knowledge / Algorithms / Projects / materials 五库物理分离，跨库用 ATTACH；**questions.sqlite3 只读**，Runtime 禁止自动扩题 |
 
+## 三·五、双端能力（Mac 守护进程 + iPad 阅读批注终端）
+
+学习核心之外，本版本新增双端旁路（不替代也不重构学习系统）：
+
+- `DualEnd-Mac/`：Node 守护进程。QuestionGraph canonical store（CENTER 正方 / EXPLANATION 圆 / TEMPORARY 三角）、localhost Agent CLI、Bonjour `_qiuzhaoreview._tcp` 广播、WebSocket v1、Snapshot/Patch 同步、Ink 备份。
+- `DualEnd-iPad/`：iPadOS App（Xcode 工程 `QiuZhaoReader.xcodeproj`）。问题图 Topology（拖动/改标题/删除）、Markdown 只读 Reader + Apple Pencil 批注（PencilKit，按 node_id 绑定）、离线 cache + outbox、零配对自动发现。
+- 启动：`node DualEnd-Mac/bin/qreview-dual.mjs daemon start`；Agent 协作契约见 RuntimePrompt `21_双端问题图与iPad协作协议.md`；验收与状态见 `双端Release验收清单.md`、`双端更新实施状态.md`。
+
 ## 四、开始使用（日常对话）
 
 在仓库内开一个 AI Agent 会话，直接说：

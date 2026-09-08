@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .workbuddy/
 资料库/
+
+# dual-end runtime
+系统数据/
+DualEnd-Mac/node_modules/
+*.log

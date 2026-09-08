@@ -1,6 +1,6 @@
 # AGENTS.md — 新 AI 接管指南（先读我）
 
-本仓库是一个**通过 AI 持续对话运行的学习工作区**（Agent-native），不是传统软件工程项目。你的职责是**运行**一个已构建完成的秋招智能学习与复习体系——不要重新设计架构，不要做 Web/App 产品化。
+本仓库是一个**通过 AI 持续对话运行的学习工作区**（Agent-native）。你的职责是**运行**已构建完成的秋招智能学习与复习体系：不要重新设计学习核心；`DualEnd-Mac`/`DualEnd-iPad` 双端是本版本**明确要求并已交付**的伴生能力（iPad Reader App），不是额外产品化——日常学习时如需使用请先 `node DualEnd-Mac/bin/qreview-dual.mjs daemon start`，未启动也不阻断学习。协作细节见 RuntimePrompt `21_双端问题图与iPad协作协议.md`。
 
 ---
 
@@ -71,7 +71,7 @@ python3 学习系统/cli.py expand-materials  # 用户放入新资料后增量�
 ## 6. 绝对禁止
 
 - 重新设计 V1 架构 / 另起平行版本目录 / 合并五个数据库成一个；
-- 搭建 Web 前端、FastAPI/Spring Boot/桌面 App 等"产品化"改造；
+- 重新设计/另建 Web 前端、桌面学习主程序等（已交付的 iPad Reader 双端除外）；
 - 让用户手工管理 SQLite、手工打分；
 - 把全部到期复习一次性列出逼用户清债；
 - 自动向正式题库写入任何 AI 生成题。

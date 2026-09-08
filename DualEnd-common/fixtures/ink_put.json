@@ -1,0 +1,17 @@
+{
+ "v": 1,
+ "message_id": "f-ink-1",
+ "type": "INK_PUT",
+ "session_epoch": "e-1",
+ "sent_at": "2026-09-08T12:35:03.000Z",
+ "payload": {
+  "command_id": "c-2",
+  "kind": "INK_PUT",
+  "node_id": "n1",
+  "ink_revision": 1,
+  "format": "pkdrawing-v1",
+  "blob_sha256": "abc",
+  "blob": "UEtEUkFXSU5HLURBVEE=",
+  "graph_id": "g1"
+ }
+}

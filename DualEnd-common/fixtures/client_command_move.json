@@ -1,0 +1,18 @@
+{
+ "v": 1,
+ "message_id": "f-cc-1",
+ "type": "CLIENT_COMMAND",
+ "session_epoch": "e-1",
+ "sent_at": "2026-09-08T12:35:02.000Z",
+ "payload": {
+  "command_id": "c-1",
+  "kind": "MOVE_NODE",
+  "graph_id": "g1",
+  "payload": {
+   "node_id": "n1",
+   "x_norm": 0.82,
+   "y_norm": 0.31,
+   "base_layout_revision": 1
+  }
+ }
+}

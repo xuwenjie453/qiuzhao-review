@@ -1,0 +1,29 @@
+{
+ "v": 1,
+ "message_id": "f-patch-1",
+ "type": "GRAPH_PATCH",
+ "session_epoch": "e-1",
+ "sent_at": "2026-09-08T12:35:01.000Z",
+ "payload": {
+  "graph_id": "g1",
+  "base_revision": 1,
+  "target_revision": 2,
+  "ops": [
+   {
+    "op": "ADD_NODE",
+    "node": {
+     "node_id": "n2",
+     "kind": "TEMPORARY",
+     "title": "临时节点",
+     "body_markdown": "原解释",
+     "node_revision": 1,
+     "layout": {
+      "x": 0.3,
+      "y": 0.3,
+      "revision": 1
+     }
+    }
+   }
+  ]
+ }
+}

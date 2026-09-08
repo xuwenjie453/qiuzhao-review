@@ -1,0 +1,16 @@
+{
+ "v": 1,
+ "message_id": "f-welcome-1",
+ "type": "WELCOME",
+ "session_epoch": "e-1",
+ "sent_at": "2026-09-08T12:34:57.000Z",
+ "payload": {
+  "selected_protocol": 1,
+  "daemon_id": "mac-A",
+  "server_seq": 3,
+  "active": {
+   "graph_id": "g1",
+   "round_id": "r1"
+  }
+ }
+}

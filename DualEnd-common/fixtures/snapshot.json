@@ -1,0 +1,40 @@
+{
+ "v": 1,
+ "message_id": "f-snap-1",
+ "type": "GRAPH_SNAPSHOT",
+ "session_epoch": "e-1",
+ "sent_at": "2026-09-08T12:35:00.000Z",
+ "payload": {
+  "graph_id": "g1",
+  "question_key": "qb:Redis-01-003",
+  "round_id": "r1",
+  "revision": 1,
+  "center_node_id": "n0",
+  "nodes": [
+   {
+    "node_id": "n0",
+    "kind": "CENTER",
+    "title": "Redis过期删除策略",
+    "body_markdown": "题干原文",
+    "node_revision": 1,
+    "layout": {
+     "x": 0.5,
+     "y": 0.5,
+     "revision": 1
+    }
+   },
+   {
+    "node_id": "n1",
+    "kind": "EXPLANATION",
+    "title": "惰性与定期",
+    "body_markdown": "用户指定的解释原文",
+    "node_revision": 1,
+    "layout": {
+     "x": 0.7,
+     "y": 0.4,
+     "revision": 1
+    }
+   }
+  ]
+ }
+}
