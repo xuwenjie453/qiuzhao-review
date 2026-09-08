@@ -20,10 +20,10 @@
 ├── 试题库/                    # 真人技术题库（只读资产，2383 题）
 │   ├── Knowledge/  Algorithms/  Projects/   # 三大类 49 个英文子类
 │   └── questions.sqlite3      # 题库 1:1 索引
-├── 资料库/                    # 教学资料源（Source of Truth）
+├── 资料库/                    # 教学资料源（本地资产，不入 git）
 │   ├── Agent面试资料/ Java面试资料/ 2027-CSKAOYAN-eBooks-main/   # 160+ 篇 md 教程
 │   ├── 408计算机专业基础综合/ 计算408真题/ …                      # 教材与真题 PDF
-│   ├── materials.sqlite3      # Hybrid RAG 索引（本地生成）
+│   ├── materials.sqlite3      # Hybrid RAG 索引（本地生成，可 expand-materials 重建）
 │   └── index/
 ├── 学习系统/                  # V1 系统实现代码（CLI + Python 包）
 │   ├── cli.py  test_e2e.py  README.md
@@ -44,9 +44,9 @@
 - 每条含永久题号 `<子类-文件-序号>`、重要度星级、题干、答案、极简解析；Markdown 与 `questions.sqlite3` 严格 1:1
 - 已过两轮 QA 纠错（错误率 <2%，408/算法全量核验），题号永久冻结
 
-### 2. 资料库 —— 教学源 + Hybrid RAG（160+ md 教程，索引本地重建）
-- md 教程已入库 git（含 27 王道 408 四科 Markdown、Agent/Java 面试资料）；PDF 教材与真题为本地资产不入 git
-- `materials.sqlite3`：Document → Section → Concept 三级切块 + **FTS5（trigram 中文全文）** + **语义向量**双路检索、词项稀缺度加权融合、Small-to-Big 父块补上下文
+### 2. 资料库 —— 教学源 + Hybrid RAG（160+ md 教程，**本地资产，不入 git**）
+- 全部资料（Agent/Java 面试 md、27 王道 408 四科 Markdown、PDF 教材与真题）仅存在于你的本地 `资料库/`，GitHub 仓库不含任何资料内容
+- `materials.sqlite3`：Document → Section → Concept 三级切块 + **FTS5（trigram 中文全文）** + **语义向量**双路检索、词项稀缺度加权融合、Small-to-Big 父块补上下文（克隆仓库后放入资料并运行 `expand-materials` 即可重建）
 - 学习时按需检索最小充分知识（G1~G6 动态粒度），**不预生成固定 AI 摘要**；内容政策：跳过模拟题/README
 
 ### 3. 提示词规划 —— 构建期与运行期 Prompt 包
@@ -123,4 +123,4 @@ python3 学习系统/test_e2e.py             # 21 项端到端验收(临时环�
 
 ## 七、许可与说明
 
-本仓库内容仅供个人秋招复习使用。试题来自公开面经与统考真题，资料（王道教材 Markdown、面试资料等）版权归原作者所有，请勿用于商业分发。资料库中 200MB+ 级扫描版教材与真题 PDF 不在 git 内，需要时请自行放置后运行 `expand-materials` 重建检索索引。
+本仓库内容仅供个人秋招复习使用。试题来自公开面经与统考真题。资料库（王道教材 Markdown、面试资料、PDF 教材与真题等）**仅保存在本地、不入 git**，版权归原作者所有，请勿用于商业分发；克隆仓库后按需自行放置资料并运行 `expand-materials` 重建检索索引。
