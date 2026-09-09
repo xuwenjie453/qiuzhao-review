@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { Daemon } from '../src/daemon.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '..', '..', '..');
+// bin/ -> DualEnd-Mac/ -> 仓库根目录；不要再向上跳到“秋招”父目录，
+// 否则 daemon 与仓库内 README/AGENTS 约定的系统数据会分裂成两份。
+const REPO_ROOT = join(__dirname, '..', '..');
 const DATA_DIR = join(REPO_ROOT, '系统数据', 'dual-end');
 
 const LOGGER = {
@@ -55,11 +57,8 @@ async function main() {
     case 'daemon': {
       if (sub === 'start') {
         const daemon = new Daemon({ dataDir: DATA_DIR, logger: LOGGER });
-        daemon.on('ready', ({ controlPort, daemonId }) => {
-          // 把 control_port 写回锁供 CLI 使用
-          writeFileSync(join(DATA_DIR, 'runtime', 'daemon.lock'),
-            JSON.stringify({ pid: process.pid, started_at: new Date().toISOString(), control_port: controlPort }));
-          console.log(`READY daemon_id=${daemonId} control_port=${controlPort} bridge_port=${controlPort}`);
+        daemon.on('ready', ({ controlPort, bridgePort, daemonId }) => {
+          console.log(`READY daemon_id=${daemonId} control_port=${controlPort} bridge_port=${bridgePort}`);
         });
         const ok = await daemon.start();
         if (!ok) process.exit(1);

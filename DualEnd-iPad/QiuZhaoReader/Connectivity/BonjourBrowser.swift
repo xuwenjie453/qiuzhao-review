@@ -46,46 +46,39 @@ final class BonjourBrowser {
                 if case .service(let name, _, _, _) = r.endpoint { names.append(name) }
             }
             names.sort()          // daemon_id 稳定排序
+            print("[diag] browse results:", names)
             DispatchQueue.main.async { self?.candidates = names }
         }
         self.browser = b
         b.start(queue: .main)
     }
 
-    /// M-1.6 自动选择并解析(不弹选择页)
-    func pickAndResolve(callback: @escaping ResolveCallback) {
+    /// M-1.6 自动选择候选端点(不弹选择页); 解析由 NWConnection(.service) 系统完成。
+    ///
+    /// 这里必须把 Bonjour service endpoint 原样交给 Network.framework，不能把
+    /// 服务名替换成手工配置的 host/port；否则零配置自动发现会被绕过。
+    func preferredEndpoint() -> (name: String, endpoint: NWEndpoint)? {
         let preferred = preferredProvider()
         var picked: String?
-        if let p = preferred, candidates.contains(p) {
-            picked = p
+        if let p = preferred,
+           let match = candidates.first(where: { $0 == p || self.extractDaemonId(from: $0) == p }) {
+            // preferredDaemonId 是 WELCOME 返回的 daemon_id，而 browse result 是
+            // qiuzao-review-<daemon_id> 的 service instance name；两者都要支持。
+            picked = match
         } else {
             picked = candidates.first
         }
         guard let name = picked else {
-            callback(.failure(.resolveFailed("无候选")))
-            return
+            print("[diag] 无候选 candidates=", candidates)
+            return nil
         }
-        let endpoint = NWEndpoint.service(name: name, type: "_qiuzhaoreview._tcp.", domain: "local", interface: nil)
-        let conn = NWConnection(to: endpoint, using: .tcp)
-        conn.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                if case .hostPort(let host, let port) = conn.endpoint {
-                    conn.cancel()
-                    callback(.success(ResolvedDaemon(daemonId: self.extractDaemonId(from: name),
-                                                    host: Self.hostString(host),
-                                                    port: UInt16(port.rawValue))))
-                } else {
-                    conn.cancel()
-                    callback(.failure(.resolveFailed("endpoint 非 hostPort")))
-                }
-            case .failed(let err):
-                callback(.failure(.resolveFailed("\(err)")))
-            default:
-                break
-            }
-        }
-        conn.start(queue: .main)
+        let endpoint = NWEndpoint.service(
+            name: name,
+            type: "_qiuzhaoreview._tcp.",
+            domain: "local",
+            interface: nil
+        )
+        return (name, endpoint)
     }
 
     private func extractDaemonId(from serviceName: String) -> String {

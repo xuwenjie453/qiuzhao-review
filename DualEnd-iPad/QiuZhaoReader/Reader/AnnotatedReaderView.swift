@@ -31,6 +31,21 @@ final class AnnotatedReaderView: UIView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // PDF 阅读器效果：正文页在宽屏上居中，窄屏时仍允许横向滚动。
+        // 只调整 UIScrollView 的外围 inset，不改 contentView 内坐标，
+        // 因此 PKCanvasView 与正文的 Pencil 坐标始终一致。
+        let gutter = max(0, (bounds.width - typography.canonicalPageWidth) / 2)
+        if scroll.contentInset.left != gutter || scroll.contentInset.right != gutter {
+            var inset = scroll.contentInset
+            inset.left = gutter
+            inset.right = gutter
+            scroll.contentInset = inset
+            scroll.scrollIndicatorInsets = inset
+        }
+    }
+
     // MARK: 构建
     private func build(markdown: String) {
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -59,9 +74,9 @@ final class AnnotatedReaderView: UIView {
         markdownView.isUserInteractionEnabled = false
         contentView.addSubview(markdownView)
         NSLayoutConstraint.activate([
-            markdownView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            markdownView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: typography.horizontalInset),
-            markdownView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -typography.horizontalInset),
+            markdownView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: typography.topInset),
+            markdownView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            markdownView.widthAnchor.constraint(equalToConstant: typography.textColumnWidth),
         ])
         renderMarkdown(markdown, into: markdownView)
 
@@ -113,22 +128,44 @@ final class AnnotatedReaderView: UIView {
     private func view(for block: MDBlock) -> UIView {
         switch block {
         case .heading(let level, let text):
-            let l = UILabel()
-            l.numberOfLines = 0
-            l.text = text
-            l.font = .boldSystemFont(ofSize: level == 1 ? typography.h1Size : typography.h2Size)
-            return l
+            let label = UILabel()
+            label.numberOfLines = 0
+            label.text = text
+            label.font = .boldSystemFont(ofSize: level == 1 ? typography.h1Size : typography.h2Size)
+            label.textColor = level == 1 ? .label : .systemBlue
+            label.setContentCompressionResistancePriority(.required, for: .vertical)
+            if level <= 2 {
+                // PDF 的一级/二级标题左侧有醒目的竖线；标题与正文仍共享
+                // 同一 contentView 坐标系，保证 PencilKit 批注不发生偏移。
+                let wrapper = UIView()
+                let bar = UIView()
+                bar.translatesAutoresizingMaskIntoConstraints = false
+                bar.backgroundColor = level == 1 ? .label : .systemBlue
+                wrapper.addSubview(bar)
+                label.translatesAutoresizingMaskIntoConstraints = false
+                wrapper.addSubview(label)
+                NSLayoutConstraint.activate([
+                    bar.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+                    bar.topAnchor.constraint(equalTo: wrapper.topAnchor),
+                    bar.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+                    bar.widthAnchor.constraint(equalToConstant: 4),
+                    label.leadingAnchor.constraint(equalTo: bar.trailingAnchor, constant: 16),
+                    label.topAnchor.constraint(equalTo: wrapper.topAnchor),
+                    label.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+                    label.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+                ])
+                return wrapper
+            }
+            return label
         case .paragraph(let text):
             let l = UILabel()
             l.numberOfLines = 0
-            l.text = text
-            l.font = .systemFont(ofSize: typography.bodyFontSize)
+            l.attributedText = attributed(text, font: .systemFont(ofSize: typography.bodyFontSize), color: .label)
             return l
         case .list(let text):
             let l = UILabel()
             l.numberOfLines = 0
-            l.text = "•  " + text
-            l.font = .systemFont(ofSize: typography.bodyFontSize)
+            l.attributedText = attributed("•  " + text, font: .systemFont(ofSize: typography.bodyFontSize), color: .label)
             return l
         case .code(let code):
             let tv = UITextView()
@@ -155,6 +192,16 @@ final class AnnotatedReaderView: UIView {
         case .table(let headers, let rows):
             return tableCell(headers: headers, rows: rows)
         }
+    }
+
+    private func attributed(_ text: String, font: UIFont, color: UIColor) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = typography.bodyLineSpacing
+        style.paragraphSpacing = 2
+        style.alignment = .justified
+        return NSAttributedString(string: text, attributes: [
+            .font: font, .foregroundColor: color, .paragraphStyle: style,
+        ])
     }
 
     private func tableCell(headers: [String], rows: [[String]]) -> UIView {

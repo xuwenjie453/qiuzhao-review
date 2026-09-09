@@ -1,7 +1,8 @@
 // SyncEngine —— HELLO/WELCOME、snapshot/patch 接收(先 durable 后 ACK)、
 // outbox 发送(ACK 清除)、重连退避、active 切换、session_epoch 隔离。
-// 传输: BonjourBrowser 解析 host:port → WebSocketClient(URLSessionWebSocketTask)。
+// 传输: BonjourBrowser 选 .service 端点 → WebSocketTransport(NWConnection, 系统解析地址)。
 import Foundation
+import Network
 
 enum SyncEvent {
     case phaseChanged(ConnectionPhase)
@@ -9,10 +10,10 @@ enum SyncEvent {
     case error(String)
 }
 
-final class SyncEngine {
+final class SyncEngine: WebSocketTransportDelegate {
     private let store: ClientStore
     private let browser: BonjourBrowser
-    private var ws: WebSocketClient?
+    private var ws: WebSocketTransport?
     private(set) var phase: ConnectionPhase = .cachedOffline
     private var sessionEpoch: String?
     private var reconnectAttempt = 0
@@ -41,26 +42,20 @@ final class SyncEngine {
     private func connect() {
         guard !stopFlag else { return }
         guard ws == nil else { return }
-        browser.pickAndResolve { [weak self] result in
-            guard let self, !self.stopFlag else { return }
-            switch result {
-            case .success(let daemon):
-                self.reconnectAttempt = 0
-                self.preferredId = daemon.daemonId
-                Task { await self.store.rememberDaemon(daemon.daemonId) }
-                self.phase = .connecting
-                self.onEvent?(.phaseChanged(.connecting))
-                let client = WebSocketClient(host: daemon.host, port: daemon.port)
-                client.onOpen = { [weak self] in self?.onSocketOpen() }
-                client.onText = { [weak self] t in self?.onText(t) }
-                client.onClose = { [weak self] in self?.onSocketClosed() }
-                client.onError = { [weak self] _ in self?.onSocketClosed() }
-                self.ws = client
-                client.connect()
-            case .failure:
-                self.scheduleReconnect()
-            }
+        guard let picked = browser.preferredEndpoint() else {
+            scheduleReconnect()
+            return
         }
+        print("[diag] 选中服务:", picked.name)
+        reconnectAttempt = 0
+        preferredId = picked.name
+        Task { await store.rememberDaemon(picked.name) }
+        phase = .connecting
+        onEvent?(.phaseChanged(.connecting))
+        let t = WebSocketTransport(endpoint: picked.endpoint)
+        t.delegate = self
+        ws = t
+        t.connect()
     }
 
     private func scheduleReconnect() {
@@ -74,7 +69,26 @@ final class SyncEngine {
         }
     }
 
+    // MARK: WebSocketTransportDelegate
+    func transportOpen(_ t: WebSocketTransport) {
+        guard t === ws else { return }
+        onSocketOpen()
+    }
+    func transport(_ t: WebSocketTransport, didReceiveText text: String) {
+        guard t === ws else { return }
+        onText(text)
+    }
+    func transportClosed(_ t: WebSocketTransport) {
+        if t === ws { ws = nil }
+        onSocketClosed()
+    }
+    func transportFailed(_ t: WebSocketTransport, error: Error?) {
+        if t === ws { ws = nil }
+        onSocketClosed()
+    }
+
     private func onSocketOpen() {
+        print("[diag] ws open")
         reconnectAttempt = 0
         phase = .syncing
         onEvent?(.phaseChanged(.syncing))
@@ -95,6 +109,7 @@ final class SyncEngine {
     }
 
     private func onSocketClosed() {
+        print("[diag] ws closed")
         ws = nil
         sessionEpoch = nil
         phase = .cachedOffline
@@ -103,7 +118,11 @@ final class SyncEngine {
     }
 
     private func onText(_ text: String) {
-        guard let decoded = try? MessageCoder.decode(text) else { return }
+        guard let decoded = try? MessageCoder.decode(text) else {
+            print("[diag] 无法解析消息(前80字):", String(text.prefix(80)))
+            return
+        }
+        print("[diag] recv:", decoded.type)
         // session_epoch 隔离: 旧会话消息作废 (M-5.5)
         if let epoch = decoded.sessionEpoch, let mine = sessionEpoch, epoch != mine { return }
         handle(decoded)
@@ -187,7 +206,8 @@ final class SyncEngine {
 
     // MARK: 发送 / outbox
     func send(_ type: ClientMessageType, _ payload: [String: Any]) {
-        ws?.send(text: MessageCoder.make(type.rawValue, payload: payload, epoch: sessionEpoch))
+        guard let t = ws as? WebSocketTransport, t.isOpen else { return }
+        t.send(text: MessageCoder.make(type.rawValue, payload: payload, epoch: sessionEpoch))
     }
 
     func requestSnapshot(graphId: String) async {

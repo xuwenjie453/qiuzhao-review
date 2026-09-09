@@ -27,6 +27,7 @@ export class WsServer extends EventEmitter {
       return;
     }
     const accept = createHash('sha1').update(key + GUID).digest('base64');
+    this.log?.info?.('upgrade 101 ->', req.socket.remoteAddress);
     socket.write(
       'HTTP/1.1 101 Switching Protocols\r\n' +
       'Upgrade: websocket\r\n' +

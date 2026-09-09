@@ -48,11 +48,10 @@ final class AppSessionModel: ObservableObject {
             guard let self else { return }
             self.graphState = await self.store.cachedGraphState()
         }
-        // 2) 首次启动先说明本地网络用途, 用户确认后才触发系统权限 (M-7.4)
+        // 2) 立即开始自动发现(说明页仅首次展示, 不拦截发现流程; 系统权限弹窗由 browse 触发)
+        startDiscovery()
         if !UserDefaults.standard.bool(forKey: "dualend.permission.note.shown") {
             showPermissionExplanation = true
-        } else {
-            startDiscovery()
         }
     }
 
@@ -85,16 +84,29 @@ final class AppSessionModel: ObservableObject {
     }
 
     // MARK: UI 动作（先 local durable, 网络由 SyncEngine 尝试）
-    func nodeTapped(_ nodeId: String) { graphState.managedNodeId = nodeId }
+    func nodeTapped(_ nodeId: String) {
+        graphState.selectedNodeId = nodeId
+        graphState.managedNodeId = nodeId
+    }
+    func backgroundTapped() {
+        graphState.selectedNodeId = nil
+        graphState.managedNodeId = nil
+    }
     func nodeDoubleTapped(_ nodeId: String) {
+        // 关闭可能残留的单击管理 sheet，避免双击后两个 modal 状态竞争。
+        graphState.managedNodeId = nil
         graphState.selectedNodeId = nodeId
         graphState.readerRoute = nodeId
     }
     func nodeDragged(_ nodeId: String, to pos: CGPoint) {
+        // 位置必须逐帧严格跟随输入，不在坐标上做插值；拖动动画由节点的
+        // scale/shadow 表达，避免手指或 Pencil 悬停点与实际节点错位。
         graphState.dragTransient[nodeId] = pos
     }
     func nodeDragEnded(_ nodeId: String, at pos: CGPoint) {
-        graphState.dragTransient[nodeId] = nil
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.88)) {
+            graphState.dragTransient[nodeId] = nil
+        }
         guard let snap = graphState.snapshot,
               let node = snap.nodes.first(where: { $0.nodeId == nodeId }) else { return }
         Task {
@@ -166,6 +178,7 @@ struct RootView: View {
                                       containerSize: geo.size,
                                       onNodeTap: { model.nodeTapped($0) },
                                       onNodeDoubleTap: { model.nodeDoubleTapped($0) },
+                                      onBackgroundTap: { model.backgroundTapped() },
                                       onNodeDragChanged: { model.nodeDragged($0, to: $1) },
                                       onNodeDragEnded: { model.nodeDragEnded($0, at: $1) })
                     if let err = model.lastError {
@@ -187,6 +200,9 @@ struct RootView: View {
                     NodeManageSheet(node: node,
                                     onRename: { model.rename(nodeId: node.nodeId, title: $0) },
                                     onDelete: { model.delete(nodeId: node.nodeId) })
+                        // .sheet(item:) 复用承载视图时强制按 node_id 重建，
+                        // 防止从新节点点回 CENTER 仍显示上一个节点内容。
+                        .id(route.nodeId)
                 }
             }
         }
@@ -200,8 +216,10 @@ struct RootView: View {
             get: { model.graphState.readerRoute.map(ReaderRoute.init) },
             set: { if $0 == nil { model.graphState.readerRoute = nil } }
         )) { route in
-            ReaderHostView(nodeId: route.nodeId)
-                .environmentObject(model)
+            NavigationStack {
+                ReaderHostView(nodeId: route.nodeId)
+                    .environmentObject(model)
+            }
         }
     }
 

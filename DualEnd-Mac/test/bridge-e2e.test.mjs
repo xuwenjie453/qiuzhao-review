@@ -10,11 +10,11 @@ import { Daemon } from '../src/daemon.mjs';
 import { WsTestClient } from './ws-test-client.mjs';
 
 const NOLOG = { info() {}, warn() {}, error() {} };
-let dir, daemon, port, client;
+let dir, daemon, controlPort, bridgePort, client;
 const uid = () => crypto.randomUUID();
 
 async function localCommand(payload) {
-  const res = await fetch(`http://127.0.0.1:${port}/command`, {
+  const res = await fetch(`http://127.0.0.1:${controlPort}/command`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   });
@@ -30,9 +30,10 @@ before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'dualend-e2e-'));
   daemon = new Daemon({ dataDir: join(dir, 'data'), logger: NOLOG });
   await daemon.start();
-  port = daemon.controlPort;
+  controlPort = daemon.controlPort;
+  bridgePort = daemon.bridgePort;
   client = new WsTestClient();
-  await client.connect(port);
+  await client.connect(bridgePort);
 });
 
 after(async () => {
@@ -74,7 +75,7 @@ test('5. graph.add-node(EXPLANATION) → GRAPH_PATCH ADD_NODE', async () => {
 
 test('6. CLIENT_COMMAND move → COMMAND_ACK(canonical) + patch', async () => {
   await openQuestion();
-  const snapRes = await fetch(`http://127.0.0.1:${port}/graph/snapshot`).then((r) => r.json());
+  const snapRes = await fetch(`http://127.0.0.1:${controlPort}/graph/snapshot`).then((r) => r.json());
   const center = snapRes.nodes.find((n) => n.kind === 'CENTER');
   const ackP = client.waitJson((m) => m.type === 'COMMAND_ACK');
   client.sendJson({
@@ -86,7 +87,7 @@ test('6. CLIENT_COMMAND move → COMMAND_ACK(canonical) + patch', async () => {
 });
 
 test('7. 重复 command → one effect', async () => {
-  const snapRes = await fetch(`http://127.0.0.1:${port}/graph/snapshot`).then((r) => r.json());
+  const snapRes = await fetch(`http://127.0.0.1:${controlPort}/graph/snapshot`).then((r) => r.json());
   const center = snapRes.nodes.find((n) => n.kind === 'CENTER');
   const cmdId = uid();
   const curRev = center.node_revision;
@@ -105,7 +106,7 @@ test('8. 重连 → 新 session_epoch 隔离', async () => {
   client.close();
   await new Promise((r) => setTimeout(r, 150));
   const c2 = new WsTestClient();
-  await c2.connect(port);
+  await c2.connect(bridgePort);
   c2.sendJson({ v: 1, message_id: uid(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(), payload: { device_id: 'test-ipad-A', client_build: '1.0.0', supported_protocols: [1], last_server_seq: 0, cached_graph: { graph_id: 'g', revision: 0 } } });
   const w = await c2.waitJson((m) => m.type === 'WELCOME');
   assert.ok(w.payload.session_epoch);
@@ -115,7 +116,7 @@ test('8. 重连 → 新 session_epoch 隔离', async () => {
 
 test('9. revision mismatch → 请求 snapshot 恢复', async () => {
   // 用过期 layout_revision 发 move → COMMAND_REJECTED CAS_MISMATCH
-  const snap = await fetch(`http://127.0.0.1:${port}/graph/snapshot`).then((r) => r.json());
+  const snap = await fetch(`http://127.0.0.1:${controlPort}/graph/snapshot`).then((r) => r.json());
   const node = snap.nodes.find((n) => n.kind !== 'CENTER') ?? snap.nodes.find((n) => n.kind === 'CENTER');
   const rejP = client.waitJson((m) => m.type === 'COMMAND_REJECTED');
   client.sendJson({

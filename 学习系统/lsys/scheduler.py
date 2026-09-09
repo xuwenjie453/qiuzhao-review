@@ -14,12 +14,25 @@ INIT_DIFFICULTY = 4.0
 
 
 # ---------------- 记忆模型 ----------------
+def _aware(dt: datetime.datetime, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+    """统一调度计算的时区形态。
+
+    早期写入的 review_schedule 可能没有 offset，而新事件使用本地时区
+    ISO 字符串。Python 不允许 naive/aware datetime 直接相减，因此把旧的
+    naive 值解释为当前运行环境的本地时区，保持历史数据可继续调度。
+    """
+    if dt.tzinfo is not None:
+        return dt
+    local_tz = tz or datetime.datetime.now().astimezone().tzinfo
+    return dt.replace(tzinfo=local_tz)
+
+
 def retrievability(stability: float, last_review_at: str, now_dt: datetime.datetime | None = None) -> float:
     """R = (1 + FACTOR * t/S) ^ DECAY ; t 为经过天数。运行时计算, 不存储。"""
     if not last_review_at:
         return 0.0
-    last = datetime.datetime.fromisoformat(last_review_at)
-    now_dt = now_dt or datetime.datetime.now().astimezone()
+    now_dt = _aware(now_dt or datetime.datetime.now().astimezone())
+    last = _aware(datetime.datetime.fromisoformat(last_review_at), now_dt.tzinfo)
     t = max(0.0, (now_dt - last).total_seconds() / 86400.0)
     return (1.0 + FACTOR * t / max(0.1, stability)) ** DECAY
 
@@ -91,7 +104,7 @@ def _importance_map(conn) -> dict:
 def task_intent(conn, now_dt: datetime.datetime | None = None, engine_filter: str | None = None,
                 user_overrides: dict | None = None) -> dict | None:
     """输出下一项 TaskIntent。候选 = LEARN / REVIEW / REPAIR, 统一效用竞争。"""
-    now_dt = now_dt or datetime.datetime.now().astimezone()
+    now_dt = _aware(now_dt or datetime.datetime.now().astimezone())
     goals = goal_compiler.active_goals(conn)
     if not goals:
         return None
@@ -234,7 +247,7 @@ def _goal_relevant(conn, goal_id: str, engine: str, sub: str) -> bool:
 # ---------------- Review 完成后的再调度 ----------------
 def reschedule_after_review(capsule_id: str, engine: str, grade: str, now_dt: datetime.datetime | None = None):
     """Review/Repair 完成后更新 review_schedule(含跨引擎时序状态)。"""
-    now_dt = now_dt or datetime.datetime.now().astimezone()
+    now_dt = _aware(now_dt or datetime.datetime.now().astimezone())
     conn = db.connect(db.DB_SCHEDULER, init=False)
     try:
         row = conn.execute("SELECT * FROM review_schedule WHERE capsule_id=?", (capsule_id,)).fetchone()

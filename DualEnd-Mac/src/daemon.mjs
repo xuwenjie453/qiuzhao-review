@@ -23,7 +23,8 @@ export class Daemon extends EventEmitter {
     this.state = 'STARTING';
     this.store = null;
     this.svc = null;
-    this.http = null;
+    this.http = null;          // localhost 控制 API(仅 127.0.0.1)
+    this.bridgeHttp = null;    // WebSocket bridge(0.0.0.0, 供 iPad 局域网连接)
     this.ws = null;
     this.bonjour = null;
     this.sessions = new Set();
@@ -71,13 +72,18 @@ export class Daemon extends EventEmitter {
       this.emit('safe-mode', ic);
       return true;
     }
-    // localhost 控制 API
+    // 1) localhost 控制 API —— M-6.4: 只绑定 loopback
     this.http = createServer();
     const control = new LocalControl({ daemon: this, server: this.http });
     await new Promise((resolve) => this.http.listen(0, '127.0.0.1', resolve));
     this.controlPort = this.http.address().port;
-    // WebSocket bridge
-    const ws = new WsServer({ httpServer: this.http, path: '/bridge', logger: this.log });
+    // 2) WebSocket bridge —— 监听所有接口(局域网可达), Bonjour 注册实际端口
+    this.bridgeHttp = createServer();
+    // 诊断: 打印连接收到的原始字节前80(hex), 排查数据是否到达
+    this.bridgeHttp.on('connection', (sock) => {
+      sock.once('data', (d) => this.log.info?.('raw rx:', d.subarray(0, 80).toString('hex')));
+    });
+    const ws = new WsServer({ httpServer: this.bridgeHttp, path: '/bridge', logger: this.log });
     ws.on('connection', (conn) => {
       const sess = new SyncSession({ conn, daemon: this, store: this.store, svc: this.svc, logger: this.log });
       sess.on('graphChanged', ({ graphId, result }) => this.broadcastGraphChange(graphId, result));
@@ -86,7 +92,17 @@ export class Daemon extends EventEmitter {
       this.log.info?.('ipad connected');
     });
     this.ws = ws;
-    this.bridgePort = this.http.address().port;   // 同一 HTTP server: control+bridge 共用端口
+    const wantBridgePort = Number(process.env.DUALEND_BRIDGE_PORT || 0);
+    await new Promise((resolve) => this.bridgeHttp.listen(wantBridgePort, '0.0.0.0', resolve));
+    this.bridgePort = this.bridgeHttp.address().port;
+    // CLI/status 读取同一份运行时锁；端口在两个 listener 都 ready 后一次性写入，
+    // 避免 CLI 打印过期或把 bridge_port 错写成 control_port。
+    writeFileSync(this.lockPath, JSON.stringify({
+      pid: process.pid,
+      started_at: new Date().toISOString(),
+      control_port: this.controlPort,
+      bridge_port: this.bridgePort,
+    }));
     // Bonjour 注册真实监听端口
     this.bonjour = new BonjourAdvertiser({ daemonId: this.daemonId, port: this.bridgePort, logger: this.log });
     this.bonjour.start();
@@ -171,7 +187,8 @@ export class Daemon extends EventEmitter {
     this.bonjour?.stop();
     for (const s of this.sessions) s.close('daemon stop');
     this.ws?.close?.();
-    await new Promise((r) => this.http?.close?.(r));
+    await new Promise((r) => { try { this.http?.close?.(r); } catch { r(); } });
+    await new Promise((r) => { try { this.bridgeHttp?.close?.(r); } catch { r(); } });
     this.store?.close();
     try { rmSync(this.lockPath, { force: true }); } catch { /* noop */ }
     this.state = 'STOPPED';

@@ -6,6 +6,7 @@ import PencilKit
 
 struct ReaderHostView: View {
     @EnvironmentObject var model: AppSessionModel
+    @Environment(\.dismiss) private var dismiss
     let nodeId: String
 
     @State private var markdown = ""
@@ -28,6 +29,16 @@ struct ReaderHostView: View {
         }
         .navigationTitle("节点阅读与批注")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Label("返回", systemImage: "chevron.left")
+                }
+            }
+        }
         .onAppear { load() }
         .onDisappear { forceFlush() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
@@ -121,7 +132,11 @@ struct ReaderContainer: UIViewControllerRepresentable {
         if let drawing, !needReconfigure, co.lastConfiguredNode == nodeId, vc.needsDrawingLoad {
             vc.loadDrawing(drawing)
         }
-        pencil.apply(to: vc.readerView.canvas, isEraser: eraser)
+        // Representable 的首次 update 可能早于 configure；不要解包尚未创建的
+        // AnnotatedReaderView，否则双击节点进入 Reader 会直接闪退。
+        if let readerView = vc.readerView {
+            pencil.apply(to: readerView.canvas, isEraser: eraser)
+        }
         co.onDirtyFlush = dirtyFlush
     }
 }

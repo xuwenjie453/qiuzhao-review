@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_qiuzhaoreview._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于自动发现同一局域网中的 Mac 学习守护进程。</string>
+</dict>
+</plist>
