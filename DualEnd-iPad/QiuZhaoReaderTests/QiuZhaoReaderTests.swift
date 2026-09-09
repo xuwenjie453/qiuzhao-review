@@ -94,6 +94,21 @@ final class StoreTests: XCTestCase {
         let hasOutbox = await store.hasOutbox(forEntity: "n1")
         XCTAssertTrue(hasOutbox)
     }
+
+    func testPendingMoveSurvivesInterimSnapshot() async {
+        _ = await store.applySnapshot(payload: sampleSnapshot(), messageId: "m1")
+        let command = await store.localMove(nodeId: "n1", x: 0.91, y: 0.12, baseLayoutRevision: 1)
+        XCTAssertFalse(command.isEmpty)
+        // A reconnect snapshot may still contain the old canonical position;
+        // the local durable MOVE_NODE intent must remain visible until ACK.
+        _ = await store.applySnapshot(payload: sampleSnapshot(revision: 2), messageId: "m2")
+        let state = await store.cachedGraphState()
+        guard let moved = state.snapshot?.nodes.first(where: { $0.nodeId == "n1" })?.layout else {
+            return XCTFail("移动节点应仍存在")
+        }
+        XCTAssertEqual(moved.x, 0.91, accuracy: 0.000001)
+        XCTAssertEqual(moved.y, 0.12, accuracy: 0.000001)
+    }
 }
 
 final class ProtocolTests: XCTestCase {
@@ -138,6 +153,24 @@ final class ProtocolTests: XCTestCase {
 }
 
 final class TopologyLogicTests: XCTestCase {
+    func testGraphCanvasRoundTripUsesSameContentRect() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let normalized = CGPoint(x: 0.73, y: 0.21)
+        let screen = geometry.screenPoint(from: normalized)
+        let roundTrip = geometry.normalizedPoint(from: screen)
+        XCTAssertEqual(roundTrip.x, normalized.x, accuracy: 0.000001)
+        XCTAssertEqual(roundTrip.y, normalized.y, accuracy: 0.000001)
+        XCTAssertTrue(geometry.contentRect.contains(screen))
+    }
+
+    func testGraphCanvasClampsOutsideViewportToNormalizedBounds() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let minPoint = geometry.normalizedPoint(from: CGPoint(x: -100, y: -100))
+        let maxPoint = geometry.normalizedPoint(from: CGPoint(x: 5000, y: 5000))
+        XCTAssertEqual(minPoint, CGPoint.zero)
+        XCTAssertEqual(maxPoint, CGPoint(x: 1, y: 1))
+    }
+
     func testRadialSlotDeterministicAndBounded() {
         let p0 = TopologyLayout.slot(index: 0)
         let p0b = TopologyLayout.slot(index: 0)

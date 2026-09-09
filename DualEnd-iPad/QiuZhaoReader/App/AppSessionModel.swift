@@ -27,6 +27,10 @@ final class AppSessionModel: ObservableObject {
     private var browser: BonjourBrowser!
     private var sync: SyncEngine!
     private var storePath: String!
+    /// command_id -> node_id for optimistic MOVE_NODE commands. This is kept
+    /// in memory only; the durable intent itself remains in ClientStore's
+    /// outbox across reconnects.
+    private var pendingMoveCommands: [String: String] = [:]
 
     func bootstrap() {
         guard store == nil else { return }
@@ -39,7 +43,14 @@ final class AppSessionModel: ObservableObject {
         sync.onEvent = { [weak self] ev in
             switch ev {
             case .phaseChanged(let p): self?.phase = p
-            case .graphChanged(let st): self?.graphState = st
+            case .graphChanged(let st): self?.applyGraphState(st)
+            case .commandAck:
+                // Keep the optimistic overlay until the matching canonical
+                // snapshot/patch is observed. Clearing on ACK alone creates a
+                // visible one-frame jump back to the old server coordinate.
+                break
+            case .commandRejected(let commandId, _, let reason):
+                self?.handleCommandRejected(commandId: commandId, reason: reason)
             case .error(let e): self?.lastError = e
             }
         }
@@ -104,14 +115,20 @@ final class AppSessionModel: ObservableObject {
         graphState.dragTransient[nodeId] = pos
     }
     func nodeDragEnded(_ nodeId: String, at pos: CGPoint) {
+        // Keep the final position visible while the durable command traverses
+        // the outbox and while Mac publishes its next graph revision.
+        graphState.pendingPositions[nodeId] = pos
         withAnimation(.spring(response: 0.22, dampingFraction: 0.88)) {
             graphState.dragTransient[nodeId] = nil
         }
         guard let snap = graphState.snapshot,
               let node = snap.nodes.first(where: { $0.nodeId == nodeId }) else { return }
         Task {
-            await store.localMove(nodeId: nodeId, x: Double(pos.x), y: Double(pos.y),
-                                  baseLayoutRevision: node.layout.revision)
+            let commandId = await store.localMove(nodeId: nodeId, x: Double(pos.x), y: Double(pos.y),
+                                                  baseLayoutRevision: node.layout.revision)
+            await MainActor.run {
+                self.pendingMoveCommands[commandId] = nodeId
+            }
             sync.pushLocalMutation()
         }
     }
@@ -134,6 +151,42 @@ final class AppSessionModel: ObservableObject {
         graphState.managedNodeId = nil
     }
     func didEnterReader(nodeId: String) { /* ink flush 生命周期由 ReaderHost 处理 */ }
+
+    // MARK: - Canonical graph merge / optimistic move lifecycle
+    private func applyGraphState(_ incoming: QuestionGraphState) {
+        var next = incoming
+        // These fields are local UI state and are intentionally not replaced
+        // by a server snapshot.
+        next.selectedNodeId = graphState.selectedNodeId
+        next.managedNodeId = graphState.managedNodeId
+        next.readerRoute = graphState.readerRoute
+        next.dragTransient = graphState.dragTransient
+        next.pendingPositions = graphState.pendingPositions
+
+        // A pending move is complete only when the canonical graph contains
+        // the same normalized coordinate. Older snapshots must not make the
+        // node jump back during the ACK/patch gap.
+        if let snapshot = incoming.snapshot {
+            for (nodeId, pending) in graphState.pendingPositions {
+                guard let node = snapshot.nodes.first(where: { $0.nodeId == nodeId }) else { continue }
+                let dx = abs(node.layout.x - Double(pending.x))
+                let dy = abs(node.layout.y - Double(pending.y))
+                if dx < 0.0005 && dy < 0.0005 {
+                    next.pendingPositions[nodeId] = nil
+                    pendingMoveCommands = pendingMoveCommands.filter { $0.value != nodeId }
+                }
+            }
+        }
+        graphState = next
+    }
+
+    private func handleCommandRejected(commandId: String?, reason: String) {
+        if let commandId, let nodeId = pendingMoveCommands.removeValue(forKey: commandId) {
+            graphState.pendingPositions[nodeId] = nil
+            graphState.dragTransient[nodeId] = nil
+        }
+        lastError = reason
+    }
 }
 
 // MARK: - Ink / Reader 支撑（同文件 extension 可访问 private store/sync）

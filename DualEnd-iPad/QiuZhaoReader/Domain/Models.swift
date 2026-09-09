@@ -70,6 +70,8 @@ struct QuestionGraphState: Equatable {
     var selectedNodeId: String?
     /// 拖动过程中的瞬时位置（server 确认前不覆盖 canonical layout）
     var dragTransient: [String: CGPoint] = [:]
+    /// 本地已 durable、等待 Mac ACK 的位置；显示优先级高于 canonical layout。
+    var pendingPositions: [String: CGPoint] = [:]
     var managedNodeId: String?          // single-tap sheet
     var readerRoute: String?            // double-tap 进入 node
 }

@@ -101,11 +101,15 @@ final actor ClientStore {
         // upsert nodes（保留本地未同步 title/layout 意图）
         for n in dto.nodes {
             let local = try? db.query("SELECT title,x_norm,y_norm,node_revision,layout_revision FROM nodes_cache WHERE node_id=?", [n.nodeId]).first
-            let pending = (try? db.query("SELECT 1 FROM outbox WHERE entity_id=? LIMIT 1", [n.nodeId]).first) != nil
+            let pendingRow = try? db.query("SELECT kind FROM outbox WHERE entity_id=? ORDER BY rowid LIMIT 1", [n.nodeId]).first
+            let pending = pendingRow != nil
+            let pendingMove = (pendingRow?["kind"] as? String) == "MOVE_NODE"
             let title = (pending && local?["title"] != nil) ? (local?["title"] as? String ?? n.title) : n.title
+            let x = (pendingMove ? local?["x_norm"] as? Double : nil) ?? n.layout.x
+            let y = (pendingMove ? local?["y_norm"] as? Double : nil) ?? n.layout.y
             try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)",
                 [n.nodeId, dto.graphId, n.kind.rawValue, title, n.bodyMarkdown, n.nodeRevision,
-                 n.layout.x, n.layout.y, n.layout.revision, Date().timeIntervalSince1970])
+                 x, y, n.layout.revision, Date().timeIntervalSince1970])
         }
         try? db.exec("INSERT INTO inbox_dedup(message_id,kind,applied_at) VALUES (?,?,?)", [messageId, "GRAPH_SNAPSHOT", Date().timeIntervalSince1970])
         db.commit()
@@ -202,7 +206,9 @@ final actor ClientStore {
                                   "payload": ["node_id": nodeId, "title": title, "base_node_revision": baseNodeRevision]])
         db.commit()
     }
-    func localMove(nodeId: String, x: Double, y: Double, baseLayoutRevision: Int) {
+    /// Persists the move and returns the generated command id so the UI can
+    /// keep the optimistic position until the matching server snapshot arrives.
+    func localMove(nodeId: String, x: Double, y: Double, baseLayoutRevision: Int) -> String {
         db.begin(); defer { db.rollback() }
         try? db.exec("UPDATE nodes_cache SET x_norm=?, y_norm=?, updated_at=? WHERE node_id=? AND locally_deleted=0",
                      [x, y, Date().timeIntervalSince1970, nodeId])
@@ -212,6 +218,7 @@ final actor ClientStore {
                                   "graph_id": currentGraphId() ?? "",
                                   "payload": ["node_id": nodeId, "x_norm": x, "y_norm": y, "base_layout_revision": baseLayoutRevision]])
         db.commit()
+        return messageId
     }
     func localDelete(nodeId: String, baseNodeRevision: Int) {
         db.begin(); defer { db.rollback() }

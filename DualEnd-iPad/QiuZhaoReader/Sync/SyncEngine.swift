@@ -7,6 +7,11 @@ import Network
 enum SyncEvent {
     case phaseChanged(ConnectionPhase)
     case graphChanged(QuestionGraphState)
+    /// The command was durably accepted. The UI deliberately waits for the
+    /// resulting graph snapshot/patch before dropping its optimistic overlay.
+    case commandAck(commandId: String, kind: String?)
+    /// The command cannot be applied against the current canonical revision.
+    case commandRejected(commandId: String?, kind: String?, reason: String)
     case error(String)
 }
 
@@ -195,13 +200,39 @@ final class SyncEngine: WebSocketTransportDelegate {
         Task {
             let commandId = m.payload["command_id"]?.string
             await store.clearOutbox(byMessageId: m.messageId, byCommandId: commandId)
+            if let commandId {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onEvent?(.commandAck(commandId: commandId,
+                                               kind: m.payload["kind"]?.string))
+                }
+            }
         }
     }
 
     private func onRejected(_ m: DecodedEnvelope) {
+        let commandId = m.payload["command_id"]?.string
+        let kind = m.payload["kind"]?.string
         let reason = m.payload["reason"]?.string ?? "REJECTED"
         onEvent?(.error(reason))
-        Task { await publishGraph() }   // 恢复 server 视图, UI 可提示重试
+        Task {
+            // A rejection is terminal for this outbox item. Remove it before
+            // reloading the canonical graph so an old intent cannot replay on
+            // the next reconnect.
+            await store.clearOutbox(byMessageId: m.messageId, byCommandId: commandId)
+            // Mac's rejection envelope does not always repeat graph_id. Read
+            // the active cached graph before requesting a canonical snapshot;
+            // publishing the local cache here would otherwise resurrect the
+            // rejected optimistic coordinate after we clear its overlay.
+            var graphId = m.payload["graph_id"]?.string
+            if graphId == nil {
+                graphId = (await store.cachedGraphState()).snapshot?.graphId
+            }
+            if let graphId { await requestSnapshot(graphId: graphId) }
+            else { await publishGraph() }
+            DispatchQueue.main.async { [weak self] in
+                self?.onEvent?(.commandRejected(commandId: commandId, kind: kind, reason: reason))
+            }
+        }
     }
 
     // MARK: 发送 / outbox

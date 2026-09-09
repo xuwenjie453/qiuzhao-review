@@ -1,7 +1,6 @@
-// AnnotatedReaderView —— 单一坐标系的 Reader (ADR-008/M-8.3)。
-// UIScrollView(唯一滚动 owner) → ContentCoordinateView(fixed canonical width, 计算高度)
-//   → MarkdownRenderedView(只读) + PKCanvasView(透明 ink, 同 bounds)。
-// 正文与 Ink 共用同一 bounds: 禁止双滚动源硬同步(会漂移)。
+// AnnotatedReaderView —— A4 PDF-like Reader + PencilKit。
+// Outer UIScrollView 是唯一滚动/缩放 owner；PageView 内的文字和 Canvas
+// 共享同一 canonical page 坐标。页面外 gutter 不属于可写文档。
 import UIKit
 import PencilKit
 
@@ -10,46 +9,118 @@ protocol AnnotatedReaderDelegate: AnyObject {
     func readerNeedsFlush(_ view: AnnotatedReaderView)
 }
 
-final class AnnotatedReaderView: UIView {
-    weak var delegate: AnnotatedReaderDelegate?
-    let nodeId: String
+/// PKCanvasView 本身是 UIScrollView 子类，但在这里只作为 document-space ink layer。
+/// 通过 hitTest 把输入限制在 A4 白纸内部，避免页面外灰色 gutter 被误写。
+final class PageCanvasView: PKCanvasView {
+    var allowedPageRects: [CGRect] = []
 
-    private let scroll = UIScrollView()
-    private let contentView = UIView()          // ContentCoordinateView
-    private let markdownView = UIView()         // 正文渲染(只读)
-    let canvas = PKCanvasView()
-
-    private var inkDirty = false
-    private var debounceWork: DispatchWorkItem?
-    private let typography = ReaderTypography.shared
-
-    init(nodeId: String, markdown: String) {
-        self.nodeId = nodeId
-        super.init(frame: .zero)
-        backgroundColor = .systemBackground
-        build(markdown: markdown)
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard allowedPageRects.contains(where: { $0.contains(point) }) else { return nil }
+        return super.hitTest(point, with: event)
     }
+}
+
+/// 一张固定 A4 canonical page。正文 block 只在 page 内布局，背景/阴影与 Canvas 分层。
+final class ReaderPageView: UIView {
+    private let bodyView = UIView()
+    private let pageNumberLabel = UILabel()
+
+    init(index: Int, typography: ReaderTypography) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = .systemBackground
+        isUserInteractionEnabled = false
+        layer.cornerRadius = 2
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.14
+        layer.shadowRadius = 8
+        layer.shadowOffset = CGSize(width: 0, height: 3)
+
+        bodyView.translatesAutoresizingMaskIntoConstraints = false
+        bodyView.isUserInteractionEnabled = false
+        addSubview(bodyView)
+
+        pageNumberLabel.translatesAutoresizingMaskIntoConstraints = false
+        pageNumberLabel.text = "\(index + 1)"
+        pageNumberLabel.font = .systemFont(ofSize: 9)
+        pageNumberLabel.textColor = .secondaryLabel
+        pageNumberLabel.textAlignment = .center
+        addSubview(pageNumberLabel)
+
+        NSLayoutConstraint.activate([
+            bodyView.topAnchor.constraint(equalTo: topAnchor, constant: typography.topInset),
+            bodyView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: typography.horizontalInset),
+            bodyView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -typography.horizontalInset),
+            bodyView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -(typography.bottomInset + 18)),
+            pageNumberLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            pageNumberLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+        ])
+    }
+
     required init?(coder: NSCoder) { fatalError() }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        // PDF 阅读器效果：正文页在宽屏上居中，窄屏时仍允许横向滚动。
-        // 只调整 UIScrollView 的外围 inset，不改 contentView 内坐标，
-        // 因此 PKCanvasView 与正文的 Pencil 坐标始终一致。
-        let gutter = max(0, (bounds.width - typography.canonicalPageWidth) / 2)
-        if scroll.contentInset.left != gutter || scroll.contentInset.right != gutter {
-            var inset = scroll.contentInset
-            inset.left = gutter
-            inset.right = gutter
-            scroll.contentInset = inset
-            scroll.scrollIndicatorInsets = inset
+    func install(blocks: [UIView], gaps: [CGFloat]) {
+        for child in bodyView.subviews { child.removeFromSuperview() }
+        var previous: UIView?
+        for (index, block) in blocks.enumerated() {
+            block.translatesAutoresizingMaskIntoConstraints = false
+            block.isUserInteractionEnabled = false
+            bodyView.addSubview(block)
+            NSLayoutConstraint.activate([
+                block.leadingAnchor.constraint(equalTo: bodyView.leadingAnchor),
+                block.trailingAnchor.constraint(equalTo: bodyView.trailingAnchor),
+                block.topAnchor.constraint(equalTo: previous?.bottomAnchor ?? bodyView.topAnchor,
+                                            constant: previous == nil ? 0 : (index < gaps.count ? gaps[index] : 0)),
+            ])
+            previous = block
+        }
+        if let previous {
+            previous.bottomAnchor.constraint(equalTo: bodyView.bottomAnchor).isActive = true
         }
     }
 
-    // MARK: 构建
+}
+
+final class AnnotatedReaderView: UIView {
+    weak var delegate: AnnotatedReaderDelegate?
+    let nodeId: String
+    let canvas = PageCanvasView()
+    let layoutSignature: String
+
+    private let scroll = UIScrollView()
+    private let contentView = UIView()
+    private var contentHeightConstraint: NSLayoutConstraint!
+    private let typography = ReaderTypography.shared
+    private var pageRects: [CGRect] = []
+    private var pageViews: [ReaderPageView] = []
+    private var zoomInitialized = false
+    private var inkDirty = false
+    private var debounceWork: DispatchWorkItem?
+    private(set) var currentInkRevision = 0
+
+    private struct PreparedBlock {
+        let view: UIView
+        let gapBefore: CGFloat
+    }
+
+    init(nodeId: String, markdown: String) {
+        self.nodeId = nodeId
+        self.layoutSignature = typography.layoutSignature
+        super.init(frame: .zero)
+        backgroundColor = .secondarySystemBackground
+        build(markdown: markdown)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
     private func build(markdown: String) {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.delegate = self
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.alwaysBounceHorizontal = false
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.minimumZoomScale = 0.5
+        scroll.maximumZoomScale = 3
         addSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: topAnchor),
@@ -59,35 +130,32 @@ final class AnnotatedReaderView: UIView {
         ])
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.backgroundColor = .clear
         scroll.addSubview(contentView)
-        // 固定 canonical page width: 宽屏只加 gutter
+        contentHeightConstraint = contentView.heightAnchor.constraint(equalToConstant: typography.canonicalPageHeight)
         NSLayoutConstraint.activate([
             contentView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             contentView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             contentView.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             contentView.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             contentView.widthAnchor.constraint(equalToConstant: typography.canonicalPageWidth),
-            contentView.heightAnchor.constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor),
+            contentHeightConstraint,
         ])
 
-        markdownView.translatesAutoresizingMaskIntoConstraints = false
-        markdownView.isUserInteractionEnabled = false
-        contentView.addSubview(markdownView)
-        NSLayoutConstraint.activate([
-            markdownView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: typography.topInset),
-            markdownView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-            markdownView.widthAnchor.constraint(equalToConstant: typography.textColumnWidth),
-        ])
-        renderMarkdown(markdown, into: markdownView)
-
-        // Ink surface: 同一 contentView bounds
+        // 先放 page，再放 Canvas，确保 page background/文字不遮住 PencilKit。
+        renderDocument(markdown)
         canvas.translatesAutoresizingMaskIntoConstraints = false
-        canvas.drawingPolicy = .pencilOnly          // M: finger 滚动, pencil 写
-        canvas.isScrollEnabled = false              // PKCanvasView 是 UIScrollView 子类: 禁用内层滚动, 外层唯一滚动
+        canvas.drawingPolicy = .pencilOnly
+        canvas.isScrollEnabled = false
+        canvas.contentInset = .zero
+        canvas.contentOffset = .zero
+        canvas.minimumZoomScale = 1
+        canvas.maximumZoomScale = 1
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.delegate = self
         canvas.tool = PKInkingTool(.pen, color: .black, width: 2.5)
+        canvas.accessibilityIdentifier = "ink-canvas-\(nodeId)"
         contentView.addSubview(canvas)
         NSLayoutConstraint.activate([
             canvas.topAnchor.constraint(equalTo: contentView.topAnchor),
@@ -97,31 +165,98 @@ final class AnnotatedReaderView: UIView {
         ])
     }
 
-    // MARK: Markdown 渲染(block 布局; body immutable → 稳定底纸)
-    private func renderMarkdown(_ md: String, into container: UIView) {
-        var lastView: UIView?
-        let blocks = MarkdownParser.parse(md)
-        for block in blocks {
-            let v = view(for: block)
-            v.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(v)
-            if let last = lastView {
-                v.topAnchor.constraint(equalTo: last.bottomAnchor, constant: spacing(block)).isActive = true
-            } else {
-                v.topAnchor.constraint(equalTo: container.topAnchor).isActive = true
-            }
-            v.leadingAnchor.constraint(equalTo: container.leadingAnchor).isActive = true
-            v.trailingAnchor.constraint(equalTo: container.trailingAnchor).isActive = true
-            lastView = v
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width > 1, bounds.height > 1 else { return }
+        let available = bounds.insetBy(dx: 16, dy: 16)
+        let fitScale = min(available.width / typography.canonicalPageWidth,
+                           available.height / typography.canonicalPageHeight)
+        let minimum = max(0.5, min(1, fitScale))
+        if abs(scroll.minimumZoomScale - minimum) > 0.001 {
+            scroll.minimumZoomScale = minimum
         }
-        if let last = lastView {
-            last.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24).isActive = true
+        if !zoomInitialized {
+            zoomInitialized = true
+            scroll.setZoomScale(minimum, animated: false)
+        }
+        centerContent()
+    }
+
+    private func centerContent() {
+        let scaledWidth = contentView.bounds.width * scroll.zoomScale
+        let gutter = max(0, (scroll.bounds.width - scaledWidth) / 2)
+        var inset = scroll.contentInset
+        if abs(inset.left - gutter) > 0.5 || abs(inset.right - gutter) > 0.5 {
+            inset.left = gutter
+            inset.right = gutter
+            scroll.contentInset = inset
+            scroll.scrollIndicatorInsets = inset
         }
     }
 
-    private func spacing(_ b: MDBlock) -> CGFloat {
-        if case .heading = b { return 14 }
-        if case .paragraph = b { return typography.paragraphSpacing }
+    // MARK: A4 block pagination
+    private func renderDocument(_ markdown: String) {
+        for page in pageViews { page.removeFromSuperview() }
+        pageViews.removeAll()
+        let blocks = MarkdownParser.parse(markdown)
+        var pageBlocks: [[PreparedBlock]] = [[]]
+        var used: CGFloat = 0
+        let available = typography.pageContentHeight
+
+        for block in blocks {
+            let view = view(for: block)
+            let height = max(1, measuredHeight(of: view, width: typography.textColumnWidth))
+            let gap = pageBlocks[pageBlocks.count - 1].isEmpty ? 0 : spacing(block)
+            if !pageBlocks[pageBlocks.count - 1].isEmpty && used + gap + height > available {
+                pageBlocks.append([])
+                used = 0
+            }
+            let gapBefore = pageBlocks[pageBlocks.count - 1].isEmpty ? 0 : gap
+            pageBlocks[pageBlocks.count - 1].append(PreparedBlock(view: view, gapBefore: gapBefore))
+            used += gapBefore + height
+        }
+        if pageBlocks.count == 1 && pageBlocks[0].isEmpty { pageBlocks = [[]] }
+
+        let step = typography.canonicalPageHeight + typography.pageGap
+        pageRects = pageBlocks.indices.map {
+            CGRect(x: 0, y: CGFloat($0) * step,
+                   width: typography.canonicalPageWidth,
+                   height: typography.canonicalPageHeight)
+        }
+        contentHeightConstraint.constant = max(typography.canonicalPageHeight,
+                                                CGFloat(pageBlocks.count) * typography.canonicalPageHeight
+                                                + CGFloat(max(0, pageBlocks.count - 1)) * typography.pageGap)
+        for (index, blocksForPage) in pageBlocks.enumerated() {
+            let page = ReaderPageView(index: index, typography: typography)
+            page.install(blocks: blocksForPage.map(\.view), gaps: blocksForPage.map(\.gapBefore))
+            contentView.addSubview(page)
+            NSLayoutConstraint.activate([
+                page.topAnchor.constraint(equalTo: contentView.topAnchor,
+                                          constant: CGFloat(index) * step),
+                page.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                page.widthAnchor.constraint(equalToConstant: typography.canonicalPageWidth),
+                page.heightAnchor.constraint(equalToConstant: typography.canonicalPageHeight),
+            ])
+            pageViews.append(page)
+        }
+        canvas.allowedPageRects = pageRects
+    }
+
+    private func measuredHeight(of view: UIView, width: CGFloat) -> CGFloat {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        let widthConstraint = view.widthAnchor.constraint(equalToConstant: width)
+        widthConstraint.isActive = true
+        let size = view.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        widthConstraint.isActive = false
+        return size.height
+    }
+
+    private func spacing(_ block: MDBlock) -> CGFloat {
+        if case .heading = block { return 14 }
+        if case .paragraph = block { return typography.paragraphSpacing }
         return 10
     }
 
@@ -135,8 +270,6 @@ final class AnnotatedReaderView: UIView {
             label.textColor = level == 1 ? .label : .systemBlue
             label.setContentCompressionResistancePriority(.required, for: .vertical)
             if level <= 2 {
-                // PDF 的一级/二级标题左侧有醒目的竖线；标题与正文仍共享
-                // 同一 contentView 坐标系，保证 PencilKit 批注不发生偏移。
                 let wrapper = UIView()
                 let bar = UIView()
                 bar.translatesAutoresizingMaskIntoConstraints = false
@@ -149,7 +282,7 @@ final class AnnotatedReaderView: UIView {
                     bar.topAnchor.constraint(equalTo: wrapper.topAnchor),
                     bar.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
                     bar.widthAnchor.constraint(equalToConstant: 4),
-                    label.leadingAnchor.constraint(equalTo: bar.trailingAnchor, constant: 16),
+                    label.leadingAnchor.constraint(equalTo: bar.trailingAnchor, constant: 14),
                     label.topAnchor.constraint(equalTo: wrapper.topAnchor),
                     label.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
                     label.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
@@ -158,47 +291,59 @@ final class AnnotatedReaderView: UIView {
             }
             return label
         case .paragraph(let text):
-            let l = UILabel()
-            l.numberOfLines = 0
-            l.attributedText = attributed(text, font: .systemFont(ofSize: typography.bodyFontSize), color: .label)
-            return l
+            let label = UILabel()
+            label.numberOfLines = 0
+            label.attributedText = attributed(text, font: regularFont(), color: .label, alignment: .justified)
+            return label
         case .list(let text):
-            let l = UILabel()
-            l.numberOfLines = 0
-            l.attributedText = attributed("•  " + text, font: .systemFont(ofSize: typography.bodyFontSize), color: .label)
-            return l
+            let label = UILabel()
+            label.numberOfLines = 0
+            label.attributedText = attributed("•  " + text, font: regularFont(), color: .label, alignment: .left)
+            return label
         case .code(let code):
-            let tv = UITextView()
-            tv.text = code
-            tv.isEditable = false
-            tv.isScrollEnabled = false
-            tv.font = .monospacedSystemFont(ofSize: typography.codeFontSize, weight: .regular)
-            tv.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.5)
-            tv.textContainerInset = UIEdgeInsets(top: 8, left: typography.codeBlockInset, bottom: 8, right: typography.codeBlockInset)
-            return tv
+            let textView = UITextView()
+            textView.text = code
+            textView.isEditable = false
+            textView.isScrollEnabled = false
+            textView.font = .monospacedSystemFont(ofSize: typography.codeFontSize, weight: .regular)
+            textView.textContainerInset = UIEdgeInsets(top: 8, left: typography.codeBlockInset,
+                                                        bottom: 8, right: typography.codeBlockInset)
+            textView.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.65)
+            return textView
         case .quote(let text):
-            let l = UILabel()
-            l.numberOfLines = 0
-            l.text = text
-            l.font = .italicSystemFont(ofSize: typography.bodyFontSize)
-            l.textColor = .secondaryLabel
-            l.leftInset = typography.blockquoteInset
-            return l
+            let label = UILabel()
+            label.numberOfLines = 0
+            let style = NSMutableParagraphStyle()
+            style.firstLineHeadIndent = typography.blockquoteInset
+            style.headIndent = typography.blockquoteInset
+            style.lineSpacing = typography.bodyLineSpacing
+            label.attributedText = NSAttributedString(string: text, attributes: [
+                .font: UIFont.italicSystemFont(ofSize: typography.bodyFontSize),
+                .foregroundColor: UIColor.secondaryLabel,
+                .paragraphStyle: style,
+            ])
+            return label
         case .hr:
-            let v = UIView()
-            v.heightAnchor.constraint(equalToConstant: 1).isActive = true
-            v.backgroundColor = .separator
-            return v
+            let line = UIView()
+            line.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            line.backgroundColor = .separator
+            return line
         case .table(let headers, let rows):
             return tableCell(headers: headers, rows: rows)
         }
     }
 
-    private func attributed(_ text: String, font: UIFont, color: UIColor) -> NSAttributedString {
+    private func regularFont() -> UIFont {
+        UIFont(name: "PingFangSC-Regular", size: typography.bodyFontSize)
+            ?? .systemFont(ofSize: typography.bodyFontSize)
+    }
+
+    private func attributed(_ text: String, font: UIFont, color: UIColor,
+                            alignment: NSTextAlignment) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = typography.bodyLineSpacing
         style.paragraphSpacing = 2
-        style.alignment = .justified
+        style.alignment = alignment
         return NSAttributedString(string: text, attributes: [
             .font: font, .foregroundColor: color, .paragraphStyle: style,
         ])
@@ -208,32 +353,36 @@ final class AnnotatedReaderView: UIView {
         let stack = UIStackView()
         stack.axis = .vertical
         stack.spacing = 0
-        func rowCell(_ cells: [String], isHeader: Bool) -> UIView {
+        func rowCell(_ cells: [String], header: Bool) -> UIView {
             let row = UIStackView()
             row.axis = .horizontal
-            row.spacing = 0
-            for c in cells {
-                let l = UILabel()
-                l.text = c
-                l.font = .systemFont(ofSize: typography.bodyFontSize - 2, weight: isHeader ? .bold : .regular)
-                l.numberOfLines = 0
-                l.widthAnchor.constraint(equalToConstant: typography.canonicalPageWidth / max(1, CGFloat(cells.count)) - 40).isActive = true
-                row.addArrangedSubview(l)
+            row.distribution = .fillEqually
+            for cell in cells {
+                let label = UILabel()
+                label.numberOfLines = 0
+                label.text = cell
+                label.font = .systemFont(ofSize: typography.bodyFontSize - 2,
+                                         weight: header ? .bold : .regular)
+                label.layer.borderWidth = 0.5
+                label.layer.borderColor = UIColor.separator.cgColor
+                label.textAlignment = .left
+                row.addArrangedSubview(label)
             }
             return row
         }
-        stack.addArrangedSubview(rowCell(headers, isHeader: true))
-        for r in rows { stack.addArrangedSubview(rowCell(r, isHeader: false)) }
+        stack.addArrangedSubview(rowCell(headers, header: true))
+        for row in rows { stack.addArrangedSubview(rowCell(row, header: false)) }
         return stack
     }
 
-    // MARK: Ink 装载/保存 (node_id 绑定)
     func loadInk(drawing: PKDrawing?, revision: Int) {
         canvas.drawing = drawing ?? PKDrawing()
+        canvas.contentInset = .zero
+        canvas.contentOffset = .zero
+        canvas.zoomScale = 1
         currentInkRevision = revision
         inkDirty = false
     }
-    private(set) var currentInkRevision = 0
 
     func flushIfDirty() {
         guard inkDirty else { return }
@@ -243,11 +392,8 @@ final class AnnotatedReaderView: UIView {
     }
 
     func setEraser(_ eraser: Bool) {
-        if eraser {
-            canvas.tool = PKEraserTool(.vector)
-        } else {
-            canvas.tool = PKInkingTool(.pen, color: .black, width: 2.5)
-        }
+        canvas.tool = eraser ? PKEraserTool(.vector)
+                             : PKInkingTool(.pen, color: .black, width: 2.5)
     }
 }
 
@@ -255,10 +401,7 @@ extension AnnotatedReaderView: PKCanvasViewDelegate {
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         inkDirty = true
         debounceWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.flushIfDirty()
-        }
+        let work = DispatchWorkItem { [weak self] in self?.flushIfDirty() }
         debounceWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
         delegate?.readerInkChanged(self)
@@ -266,23 +409,6 @@ extension AnnotatedReaderView: PKCanvasViewDelegate {
 }
 
 extension AnnotatedReaderView: UIScrollViewDelegate {
-    func scrollViewDidScroll(_ scrollView: UIScrollView) { /* 唯一滚动源, 无同步需求 */ }
-}
-
-extension UILabel {
-    private struct LeftInsetKey { static var key = 0 }
-    var leftInset: CGFloat {
-        get { (objc_getAssociatedObject(self, &LeftInsetKey.key) as? CGFloat) ?? 0 }
-        set {
-            objc_setAssociatedObject(self, &LeftInsetKey.key, newValue, .OBJC_ASSOCIATION_RETAIN)
-            textAlignment = .left
-            // 用 paragraph style 实现缩进(简单近似)
-            if let t = text {
-                let ps = NSMutableParagraphStyle()
-                ps.firstLineHeadIndent = newValue
-                ps.headIndent = newValue
-                attributedText = NSAttributedString(string: t, attributes: [.paragraphStyle: ps])
-            }
-        }
-    }
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { contentView }
+    func scrollViewDidZoom(_ scrollView: UIScrollView) { centerContent() }
 }

@@ -1,21 +1,32 @@
-// ReaderTypography —— 全部排版数值集中一处 (M-8.1)。
-// 参考《物理与数学的对应关系》PDF：宽留白、较大正文、粗体层级标题。
+// ReaderTypography —— A4 PDF-like Reader 的唯一排版 token。
+// 页面坐标使用 PDF A4 canonical points；屏幕方向只改变外层缩放。
 import CoreGraphics
 
 struct ReaderTypography {
-    // 固定 canonical page width: 旋转/窗口变化只变外围留白, 不变正文宽度 (ADR-008)
-    // 以 iPad Air 11" 竖屏宽度为基准，完整页面（含两侧批注留白）可写。
-    let canonicalPageWidth: CGFloat = 820
-    let textColumnWidth: CGFloat = 700
-    let topInset: CGFloat = 38
-    let bodyFontSize: CGFloat = 20
-    let bodyLineSpacing: CGFloat = 8
+    // A4 页面尺寸，来自参考 PDF 的实际 MediaBox。
+    let canonicalPageWidth: CGFloat = 595.92
+    let canonicalPageHeight: CGFloat = 842.88
+    // 参考 PDF 正文左右约 41.5pt，正文列约占页面宽度的 86%。
+    let horizontalInset: CGFloat = 41.5
+    let topInset: CGFloat = 82
+    let bottomInset: CGFloat = 42
+    let pageGap: CGFloat = 24
+    let bodyFontSize: CGFloat = 18
+    let bodyLineSpacing: CGFloat = 7
     let paragraphSpacing: CGFloat = 16
     let h1Size: CGFloat = 34
-    let h2Size: CGFloat = 24
+    let h2Size: CGFloat = 25
     let codeFontSize: CGFloat = 14
     let codeBlockInset: CGFloat = 16
     let blockquoteInset: CGFloat = 14
+
+    var textColumnWidth: CGFloat { canonicalPageWidth - 2 * horizontalInset }
+    var pageContentHeight: CGFloat { canonicalPageHeight - topInset - bottomInset }
+
+    // body 与 token 组成稳定的 ink 底纸签名；屏幕方向/缩放不参与签名。
+    var layoutSignature: String {
+        "a4-v2|w=\(canonicalPageWidth)|h=\(canonicalPageHeight)|inset=\(horizontalInset)|top=\(topInset)|body=\(bodyFontSize)|line=\(bodyLineSpacing)|h1=\(h1Size)|h2=\(h2Size)"
+    }
 
     static let shared = ReaderTypography()
 }
