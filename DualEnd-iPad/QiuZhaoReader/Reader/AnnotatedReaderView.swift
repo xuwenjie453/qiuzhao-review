@@ -3,6 +3,9 @@
 // 共享同一 canonical page 坐标。页面外 gutter 不属于可写文档。
 import UIKit
 import PencilKit
+#if DEBUG
+import os
+#endif
 
 /// Pure viewport math shared by the UIKit implementation and unit tests.
 /// Document coordinates remain canonical; only the display scale changes.
@@ -122,6 +125,9 @@ final class AnnotatedReaderView: UIView {
     private var inkDirty = false
     private var debounceWork: DispatchWorkItem?
     private(set) var currentInkRevision = 0
+    #if DEBUG
+    private var probeFileHandle: FileHandle?
+    #endif
 
     private struct PreparedBlock {
         let view: UIView
@@ -195,6 +201,10 @@ final class AnnotatedReaderView: UIView {
             canvas.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             canvas.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
+
+        #if DEBUG
+        installHoverProbe()
+        #endif
     }
 
     override func layoutSubviews() {
@@ -206,6 +216,9 @@ final class AnnotatedReaderView: UIView {
         case .uninitialized:
             applyViewport(resetToTop: true)
             viewportState = .fittedAtTop
+            #if DEBUG
+            probeSnapshot(event: "viewport-first-fit")
+            #endif
         case .fittedAtTop, .fittedPreservingPosition:
             let changed = abs(size.width - lastViewportSize.width) > 0.5
                 || abs(size.height - lastViewportSize.height) > 0.5
@@ -470,6 +483,12 @@ extension AnnotatedReaderView: PKCanvasViewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
         delegate?.readerInkChanged(self)
     }
+
+    #if DEBUG
+    func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
+        probeSnapshot(event: "render-finished")
+    }
+    #endif
 }
 
 extension AnnotatedReaderView: UIScrollViewDelegate {
@@ -478,3 +497,91 @@ extension AnnotatedReaderView: UIScrollViewDelegate {
         lockHorizontalOffset()
     }
 }
+
+// MARK: - Phase 0 只读取证探针（v3 包 04 号）
+// 记录 hover 事件与双重视口几何到 Documents/hover-probe.jsonl；不绘制任何
+// 假笔迹/覆盖层，不改变正式行为；按 11 号交付报告明示移除或保留。
+#if DEBUG
+extension AnnotatedReaderView {
+    func installHoverProbe() {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let url = dir.appendingPathComponent("hover-probe.jsonl")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        probeFileHandle = FileHandle(forWritingAtPath: url.path)
+        probeFileHandle?.seekToEndOfFile()
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(hoverProbeFired(_:)))
+        hover.cancelsTouchesInView = false
+        addGestureRecognizer(hover)
+    }
+
+    @objc private func hoverProbeFired(_ g: UIHoverGestureRecognizer) {
+        let phase: String
+        switch g.state {
+        case .began: phase = "began"
+        case .changed: phase = "changed"
+        case .ended: phase = "ended"
+        case .cancelled: phase = "cancelled"
+        default: phase = "other"
+        }
+        var line: [String: Any] = [
+            "event": "hover",
+            "phase": phase,
+            "loc_self": [Double(g.location(in: self).x), Double(g.location(in: self).y)],
+            "loc_canvas": [Double(g.location(in: canvas).x), Double(g.location(in: canvas).y)],
+        ]
+        if let w = window {
+            line["loc_window"] = [Double(g.location(in: w).x), Double(g.location(in: w).y)]
+        }
+        if g.responds(to: NSSelectorFromString("zOffset")),
+           let z = g.value(forKey: "zOffset") as? Double {
+            line["z_offset"] = z
+        }
+        line.merge(probeGeometry()) { a, _ in a }
+        probeWrite(line)
+    }
+
+    func probeSnapshot(event: String) {
+        var line: [String: Any] = ["event": event]
+        line.merge(probeGeometry()) { a, _ in a }
+        probeWrite(line)
+    }
+
+    private func probeGeometry() -> [String: Any] {
+        func pt(_ p: CGPoint) -> [Double] { [Double(p.x), Double(p.y)] }
+        func rect(_ r: CGRect) -> [Double] {
+            [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)]
+        }
+        func affine(_ t: CGAffineTransform?) -> [Double]? {
+            guard let t else { return nil }
+            return [Double(t.a), Double(t.b), Double(t.c), Double(t.d), Double(t.tx), Double(t.ty)]
+        }
+        var g: [String: Any] = [
+            "scroll_zoom": Double(scroll.zoomScale),
+            "canvas_zoom": Double(canvas.zoomScale),
+            "scroll_offset": pt(scroll.contentOffset),
+            "canvas_offset": pt(canvas.contentOffset),
+            "scroll_bounds": rect(scroll.bounds),
+            "canvas_bounds": rect(canvas.bounds),
+            "canvas_frame": rect(canvas.frame),        // canvas 在 contentView 坐标系（旧架构随外层 zoom 变化）
+            "content_frame": rect(contentView.frame),  // zooming view frame == canonical×zoom 的直接证据
+            "content_bounds": rect(contentView.bounds),
+        ]
+        if let t = scroll.layer.presentation()?.affineTransform() { g["scroll_present"] = affine(t) }
+        if let t = canvas.layer.presentation()?.affineTransform() { g["canvas_present"] = affine(t) }
+        g["content_affine"] = affine(contentView.layer.affineTransform())
+        return g
+    }
+
+    private func probeWrite(_ line: [String: Any]?) {
+        guard var line, let handle = probeFileHandle else { return }
+        line["ts"] = Date().timeIntervalSince1970
+        guard let out = try? JSONSerialization.data(withJSONObject: line) else { return }
+        handle.write(out)
+        handle.write(Data("\n".utf8))
+        os_log("[hover-probe] %{public}@",
+               String(data: out, encoding: .utf8) ?? "")
+    }
+}
+#endif
