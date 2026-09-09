@@ -16,6 +16,24 @@
 - `PageCanvasView.hitTest` 的“只约束 pencil、手指放行”形式与 `contentOffset: .zero` 换算 —— 正确（05 §五，注释必须保留）。
 - 新增的两个单测（canonical↔display 往返、比例失配符号反转）—— 保留并纳入 07 号矩阵。
 
+## 五、真机/模拟器实测定案（2026-09-10 补记，采样证据）
+
+「双击节点即卡死」的**真正根因是 SwiftUI 状态反馈死循环**，与本表 #1/#2 均无关：
+
+```text
+updateUIViewController → pencil.apply(to:isEraser:) → self.isEraser = isEraser
+  （@Published 同值写入也触发 objectWillChange）
+→ @StateObject 观察 → ReaderHostView 重渲染 → updateUIViewController → ∞
+```
+
+- 主线程 99% CPU，`sample` 采样栈实证（PencilToolController.swift:46 isEraser.setter 链）。
+- 暂存版引入 @StateObject 接线时即带上此雷——它才是“暂存进不去节点”的真凶；
+  v3 Phase1 沿用暂存接线而复发。
+- 修复：`apply` 仅在 `self.isEraser != isEraser` 时写入；回归测试
+  `PencilLoopGuardTests.testApplyWithSameValueDoesNotPublish` 钉死。
+- 无头复现装置：`-uiTestOpenReaderNode <node_id|title>` launch argument（DEBUG）。
+- #1/#2（contentSize 单位、frame 布局化）仍是正确修正，保留。
+
 ## 禁止事项
 
 - 禁止 `git checkout 5121d17 -- <Reader files>` 整文件搬回：缺陷 #1 会原样带回。
