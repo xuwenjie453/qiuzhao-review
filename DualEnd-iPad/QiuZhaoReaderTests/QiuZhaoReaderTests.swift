@@ -1,6 +1,7 @@
 // iPad 单元测试 —— Store transaction / outbox replay / snapshot replace / patch validation /
 // 手势状态 reducer / 协议编解码 (M-14.4)。
 import XCTest
+import PencilKit
 @testable import QiuZhaoReader
 
 func jval(_ dict: [String: Any]) -> [String: JSONValue] {
@@ -244,5 +245,175 @@ final class ReaderViewportTests: XCTestCase {
                                                          contentSizeHeight: 1800,
                                                          viewportHeight: 800)
         XCTAssertEqual(restored, 1000, accuracy: 0.0001)
+    }
+
+    // MARK: v3 Phase 2A —— contentSize 单位与镜像几何（06 号缺陷防回归）
+
+    func testDisplayContentSizeUsesDisplayUnits() {
+        let doc = CGSize(width: 595.92, height: 842.88)
+        XCTAssertEqual(ReaderViewportMath.displayContentSize(documentSize: doc, scale: 1.0).width, 595.92, accuracy: 0.0001)
+        XCTAssertEqual(ReaderViewportMath.displayContentSize(documentSize: doc, scale: 2.0).width, 1191.84, accuracy: 0.0001)
+        XCTAssertEqual(ReaderViewportMath.displayContentSize(documentSize: doc, scale: 2.0).height, 1685.76, accuracy: 0.0001)
+        XCTAssertEqual(ReaderViewportMath.displayContentSize(documentSize: doc, scale: 0.75).width, 446.94, accuracy: 0.01)
+    }
+
+    func testDocumentMirrorGeometryMatchesCanvasInvariant() {
+        // 不变量：canonical P 经镜像层渲染于 position + P·scale，必须等于 P·z − contentOffset
+        let cases: [(z: CGFloat, off: CGPoint)] = [
+            (2.0, CGPoint(x: 0, y: 0)),
+            (1.9801, CGPoint(x: 0, y: 1383.5)),
+            (1.5, CGPoint(x: 0, y: 420)),
+        ]
+        for c in cases {
+            let position = ReaderViewportMath.documentLayerPosition(contentOffset: c.off)
+            let t = ReaderViewportMath.documentLayerTransform(scale: c.z)
+            for p in [CGPoint(x: 0, y: 0), CGPoint(x: 595.92, y: 842.88), CGPoint(x: 297.96, y: 421.44)] {
+                let viaMirror = CGPoint(x: position.x + p.applying(t).x,
+                                        y: position.y + p.applying(t).y)
+                let viaCanvas = ReaderViewportMath.displayPoint(from: p, scale: c.z, contentOffset: c.off)
+                XCTAssertEqual(viaMirror.x, viaCanvas.x, accuracy: 0.0001)
+                XCTAssertEqual(viaMirror.y, viaCanvas.y, accuracy: 0.0001)
+            }
+        }
+    }
+
+    func testCanvasOwnedViewportRoundTripsCanonicalPoint() {
+        let canonical = CGPoint(x: 123.5, y: 660.25)
+        let offset = CGPoint(x: 0, y: 420)
+        let displayed = ReaderViewportMath.displayPoint(from: canonical, scale: 2, contentOffset: offset)
+        let restored = ReaderViewportMath.canonicalPoint(from: displayed, scale: 2, contentOffset: offset)
+        XCTAssertEqual(restored.x, canonical.x, accuracy: 0.0001)
+        XCTAssertEqual(restored.y, canonical.y, accuracy: 0.0001)
+    }
+
+    func testHitTestBasisDividesByZoomOnly() {
+        // hitTest point 处于 canvas bounds 坐标系（原点已随 contentOffset 移动），
+        // canonical 换算只除 zoomScale、不再加 contentOffset——单位约定钉死。
+        let z: CGFloat = 1.9801
+        let boundsPoint = CGPoint(x: 396.0, y: 840.0)
+        let doc = ReaderViewportMath.canonicalPoint(from: boundsPoint, scale: z, contentOffset: .zero)
+        XCTAssertEqual(doc.x, boundsPoint.x / z, accuracy: 0.001)
+        XCTAssertEqual(doc.y, boundsPoint.y / z, accuracy: 0.001)
+    }
+
+    func testHoverScaleMismatchChangesSignAcrossPage() {
+        // 根因数学守卫：实时基准≠显示基准 → Δ 随位置线性变化并在锚点两侧反向。
+        let scale = 2.0, hoverScale = 1.9
+        let anchor = CGPoint(x: 297, y: 420)
+        func aroundAnchor(_ point: CGPoint, _ s: CGFloat) -> CGPoint {
+            CGPoint(x: anchor.x + (point.x - anchor.x) * s,
+                    y: anchor.y + (point.y - anchor.y) * s)
+        }
+        let top = aroundAnchor(CGPoint(x: 297, y: 180), hoverScale)
+        let actualTop = aroundAnchor(CGPoint(x: 297, y: 180), scale)
+        let bottom = aroundAnchor(CGPoint(x: 297, y: 660), hoverScale)
+        let actualBottom = aroundAnchor(CGPoint(x: 297, y: 660), scale)
+        XCTAssertGreaterThan(top.y - actualTop.y, 0)
+        XCTAssertLessThan(bottom.y - actualBottom.y, 0)
+    }
+
+    func testLayoutSignatureExcludesDisplayFactors() {
+        let sig = ReaderTypography.shared.layoutSignature
+        XCTAssertFalse(sig.contains("zoom"))
+        XCTAssertFalse(sig.contains("scale"))
+        XCTAssertFalse(sig.contains("orientation"))
+        XCTAssertEqual(sig, ReaderTypography.shared.layoutSignature)
+    }
+}
+
+// MARK: - v3 Phase 2B —— Reader 全链路冒烟（“进不去节点”回归闸门，08 号）
+@MainActor
+final class ReaderSmokeTests: XCTestCase {
+    private func longMarkdown(pages: Int) -> String {
+        var md = "# 冒烟测试文档\n\n"
+        for i in 0..<(pages * 14) {
+            md += "第 \(i) 段：Canvas 是唯一滚动缩放 owner，正文镜像层共享同一显示变换 screen(P)=P·z−offset。\n\n"
+        }
+        return md
+    }
+
+    private func makeConfiguredReader(frame: CGRect, markdown: String,
+                                      drawing: PKDrawing? = nil) -> ReaderHostVC {
+        let vc = ReaderHostVC()
+        vc.view.frame = frame
+        vc.configure(nodeId: "smoke-node", markdown: markdown, drawing: drawing)
+        vc.view.layoutIfNeeded()
+        vc.readerView.layoutIfNeeded()
+        return vc
+    }
+
+    func testConfigurePathDoesNotCrashWithAndWithoutDrawing() {
+        _ = makeConfiguredReader(frame: CGRect(x: 0, y: 0, width: 1180, height: 834),
+                                 markdown: "# 标题\n\n正文段落。")
+        let d = PKDrawing()
+        _ = makeConfiguredReader(frame: CGRect(x: 0, y: 0, width: 1180, height: 834),
+                                 markdown: "# 标题\n\n正文段落。", drawing: d)
+    }
+
+    func testViewportInvariantsAfterLayout() throws {
+        let vc = makeConfiguredReader(frame: CGRect(x: 0, y: 0, width: 1180, height: 834),
+                                      markdown: longMarkdown(pages: 5))
+        let reader = try XCTUnwrap(vc.readerView)
+        let canvas = reader.canvas
+        let z = ReaderViewportMath.fitWidthScale(viewportWidth: canvas.bounds.width,
+                                                 pageWidth: 595.92)
+        XCTAssertEqual(canvas.zoomScale, z, accuracy: 0.01)
+        XCTAssertEqual(canvas.minimumZoomScale, z, accuracy: 0.01)
+        // contentSize 必须 display 单位（06 号缺陷 #1 防回归）
+        let expected = ReaderViewportMath.displayContentSize(documentSize: reader.documentSize, scale: z)
+        XCTAssertEqual(canvas.contentSize.width, expected.width, accuracy: 1.0)
+        XCTAssertEqual(canvas.contentSize.height, expected.height, accuracy: 1.0)
+        // 长文档纵向可滚
+        XCTAssertGreaterThan(canvas.contentSize.height - canvas.bounds.height, 0)
+        // 镜像层几何
+        XCTAssertEqual(reader.contentView.bounds.size.width, reader.documentSize.width, accuracy: 0.01)
+        XCTAssertEqual(reader.contentView.layer.affineTransform().a, z, accuracy: 0.01)
+        // 长文档多页（具体页数取决于文本实测，只钉多页性）
+        XCTAssertGreaterThanOrEqual(reader.pageViews.count, 3)
+    }
+
+    func testScrollMirrorFollowsCanvasOffset() throws {
+        let vc = makeConfiguredReader(frame: CGRect(x: 0, y: 0, width: 1180, height: 834),
+                                      markdown: longMarkdown(pages: 5))
+        let reader = try XCTUnwrap(vc.readerView)
+        let canvas = reader.canvas
+        let target = min(800, canvas.contentSize.height - canvas.bounds.height)
+        canvas.setContentOffset(CGPoint(x: 0, y: target), animated: false)
+        reader.layoutIfNeeded()
+        XCTAssertEqual(reader.contentView.layer.position.x, -canvas.contentOffset.x, accuracy: 0.5)
+        XCTAssertEqual(reader.contentView.layer.position.y, -canvas.contentOffset.y, accuracy: 0.5)
+    }
+
+    func testRotationPreservesCanonicalTopAndReapplies() throws {
+        let vc = makeConfiguredReader(frame: CGRect(x: 0, y: 0, width: 1180, height: 834),
+                                      markdown: longMarkdown(pages: 5))
+        let reader = try XCTUnwrap(vc.readerView)
+        let canvas = reader.canvas
+        canvas.setContentOffset(CGPoint(x: 0, y: 400), animated: false)
+        let canonicalBefore = ReaderViewportMath.canonicalTopY(contentOffsetY: canvas.contentOffset.y,
+                                                               scale: canvas.zoomScale)
+        // 旋转到竖屏档
+        vc.view.frame = CGRect(x: 0, y: 0, width: 834, height: 1180)
+        vc.view.setNeedsLayout()
+        vc.view.layoutIfNeeded()
+        reader.layoutIfNeeded()
+        let z2 = ReaderViewportMath.fitWidthScale(viewportWidth: canvas.bounds.width, pageWidth: 595.92)
+        XCTAssertEqual(canvas.zoomScale, z2, accuracy: 0.01)
+        let canonicalAfter = ReaderViewportMath.canonicalTopY(contentOffsetY: canvas.contentOffset.y,
+                                                              scale: canvas.zoomScale)
+        XCTAssertEqual(canonicalAfter, canonicalBefore, accuracy: 1.5)
+    }
+
+    func testLoadInkHasNoGeometrySideEffects() throws {
+        let vc = makeConfiguredReader(frame: CGRect(x: 0, y: 0, width: 1180, height: 834),
+                                      markdown: longMarkdown(pages: 5))
+        let reader = try XCTUnwrap(vc.readerView)
+        let canvas = reader.canvas
+        canvas.setContentOffset(CGPoint(x: 0, y: 300), animated: false)
+        let (z0, o0) = (canvas.zoomScale, canvas.contentOffset)
+        reader.loadInk(drawing: PKDrawing(), revision: 0)
+        XCTAssertEqual(canvas.zoomScale, z0, accuracy: 0.0001)
+        XCTAssertEqual(canvas.contentOffset.y, o0.y, accuracy: 0.0001)
+        XCTAssertEqual(canvas.contentInset, .zero)
     }
 }

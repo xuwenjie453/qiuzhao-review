@@ -1,6 +1,7 @@
 // AnnotatedReaderView —— A4 PDF-like Reader + PencilKit。
-// Outer UIScrollView 是唯一滚动/缩放 owner；PageView 内的文字和 Canvas
-// 共享同一 canonical page 坐标。页面外 gutter 不属于可写文档。
+// PKCanvasView 是唯一滚动/缩放 owner；只读正文作为它的同步底层镜像层。
+// Pencil hover、书写中墨迹与历史 PKDrawing 因此共享同一显示变换
+// screen(P) = P·z − contentOffset（v3 包 02 冻结契约，单一变换根因修复）。
 import UIKit
 import PencilKit
 #if DEBUG
@@ -27,6 +28,37 @@ enum ReaderViewportMath {
         let maximum = max(0, contentSizeHeight - viewportHeight)
         return min(max(proposed, 0), maximum)
     }
+
+    /// viewport 系(不含滚动) ↔ canonical。
+    static func displayPoint(from canonical: CGPoint, scale: CGFloat,
+                             contentOffset: CGPoint) -> CGPoint {
+        CGPoint(x: canonical.x * scale - contentOffset.x,
+                y: canonical.y * scale - contentOffset.y)
+    }
+
+    static func canonicalPoint(from display: CGPoint, scale: CGFloat,
+                               contentOffset: CGPoint) -> CGPoint {
+        let safeScale = max(scale, 0.001)
+        return CGPoint(x: (display.x + contentOffset.x) / safeScale,
+                       y: (display.y + contentOffset.y) / safeScale)
+    }
+
+    /// UIScrollView 的 contentSize 语义是“当前缩放下的内容尺寸”= display 单位。
+    /// 单位约定由单测钉死（v3 包 06 缺陷 #1 的防回归）。
+    static func displayContentSize(documentSize: CGSize, scale: CGFloat) -> CGSize {
+        CGSize(width: documentSize.width * scale,
+               height: documentSize.height * scale)
+    }
+
+    /// 文档镜像层几何：anchorPoint=(0,0) 时 canonical P 渲染于 position + P·scale，
+    /// 与 Canvas 的 P·z − contentOffset 完全一致（02 冻结不变量）。
+    static func documentLayerPosition(contentOffset: CGPoint) -> CGPoint {
+        CGPoint(x: -contentOffset.x, y: -contentOffset.y)
+    }
+
+    static func documentLayerTransform(scale: CGFloat) -> CGAffineTransform {
+        CGAffineTransform(scaleX: scale, y: scale)
+    }
 }
 
 protocol AnnotatedReaderDelegate: AnyObject {
@@ -34,13 +66,22 @@ protocol AnnotatedReaderDelegate: AnyObject {
     func readerNeedsFlush(_ view: AnnotatedReaderView)
 }
 
-/// PKCanvasView 本身是 UIScrollView 子类，但在这里只作为 document-space ink layer。
-/// 通过 hitTest 把输入限制在 A4 白纸内部，避免页面外灰色 gutter 被误写。
+/// PKCanvasView 同时拥有 PencilKit drawing viewport 和 Reader 的纵向滚动。
+/// 手指始终可滚动；只有 Pencil 落笔才受 A4 白纸范围限制。
 final class PageCanvasView: PKCanvasView {
     var allowedPageRects: [CGRect] = []
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard allowedPageRects.contains(where: { $0.contains(point) }) else { return nil }
+        if let touch = event?.allTouches?.first, touch.type == .pencil {
+            // hitTest point 与 location(in:) 同处 canvas bounds 坐标系；UIScrollView 的
+            // bounds.origin == contentOffset，原点已随滚动移动 → canonical 换算只除
+            // zoomScale，不再加 contentOffset（加了是双重计算）。
+            let documentPoint = ReaderViewportMath.canonicalPoint(
+                from: point, scale: zoomScale, contentOffset: .zero)
+            guard allowedPageRects.contains(where: { $0.contains(documentPoint) }) else {
+                return nil
+            }
+        }
         return super.hitTest(point, with: event)
     }
 }
@@ -112,12 +153,14 @@ final class AnnotatedReaderView: UIView {
     let canvas = PageCanvasView()
     let layoutSignature: String
 
-    private let scroll = UIScrollView()
-    private let contentView = UIView()
-    private var contentHeightConstraint: NSLayoutConstraint!
+    /// 文档镜像层：非交互兄弟层，承载 ReaderPageView；几何由 syncDocumentMirror
+    /// 从 Canvas 视口单向镜像（anchor .zero + position −offset + scale z）。
+    /// （internal + @testable 供冒烟测试断言镜像几何。）
+    let contentView = UIView()
     private let typography = ReaderTypography.shared
     private var pageRects: [CGRect] = []
-    private var pageViews: [ReaderPageView] = []
+    private(set) var pageViews: [ReaderPageView] = []
+    private(set) var documentSize: CGSize
     private enum ViewportState { case uninitialized, fittedAtTop, fittedPreservingPosition }
     private var viewportState: ViewportState = .uninitialized
     private var lastViewportSize: CGSize = .zero
@@ -137,6 +180,8 @@ final class AnnotatedReaderView: UIView {
     init(nodeId: String, markdown: String) {
         self.nodeId = nodeId
         self.layoutSignature = typography.layoutSignature
+        self.documentSize = CGSize(width: typography.canonicalPageWidth,
+                                   height: typography.canonicalPageHeight)
         super.init(frame: .zero)
         backgroundColor = .secondarySystemBackground
         build(markdown: markdown)
@@ -145,61 +190,47 @@ final class AnnotatedReaderView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func build(markdown: String) {
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.delegate = self
-        scroll.contentInsetAdjustmentBehavior = .never
-        scroll.alwaysBounceVertical = true
-        scroll.alwaysBounceHorizontal = false
-        scroll.bounces = true
-        scroll.isDirectionalLockEnabled = true
-        scroll.showsHorizontalScrollIndicator = false
-        scroll.showsVerticalScrollIndicator = true
-        scroll.contentInset = .zero
-        scroll.scrollIndicatorInsets = .zero
-        scroll.minimumZoomScale = 0.5
-        scroll.maximumZoomScale = 3
-        scroll.pinchGestureRecognizer?.isEnabled = false
-        addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
-
-        contentView.translatesAutoresizingMaskIntoConstraints = false
+        // 1) 文档镜像层：手动几何（不参与 autolayout 定位），只作为 Canvas 的只读底衬。
+        contentView.translatesAutoresizingMaskIntoConstraints = true
         contentView.backgroundColor = .clear
-        scroll.addSubview(contentView)
-        contentHeightConstraint = contentView.heightAnchor.constraint(equalToConstant: typography.canonicalPageHeight)
-        NSLayoutConstraint.activate([
-            contentView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            contentView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            contentView.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            contentView.widthAnchor.constraint(equalToConstant: typography.canonicalPageWidth),
-            contentHeightConstraint,
-        ])
+        contentView.isUserInteractionEnabled = false
+        contentView.bounds = CGRect(origin: .zero, size: documentSize)
+        contentView.layer.anchorPoint = .zero
+        contentView.layer.position = .zero
+        addSubview(contentView)
 
-        // 先放 page，再放 Canvas，确保 page background/文字不遮住 PencilKit。
+        // 2) 正文页装入镜像层（canonical 坐标，不随显示缩放变化）。
         renderDocument(markdown)
+
+        // 3) Canvas：唯一滚动/缩放 owner，钉满四边；其上不再有任何祖先变换。
         canvas.translatesAutoresizingMaskIntoConstraints = false
         canvas.drawingPolicy = .pencilOnly
-        canvas.isScrollEnabled = false
+        canvas.allowsFingerDrawing = false
+        canvas.isScrollEnabled = true
+        canvas.bounces = true
+        canvas.alwaysBounceHorizontal = false
+        canvas.alwaysBounceVertical = true
+        canvas.isDirectionalLockEnabled = true
+        canvas.contentInsetAdjustmentBehavior = .never
+        canvas.showsHorizontalScrollIndicator = false
+        canvas.showsVerticalScrollIndicator = true
         canvas.contentInset = .zero
+        canvas.scrollIndicatorInsets = .zero
         canvas.contentOffset = .zero
-        canvas.minimumZoomScale = 1
-        canvas.maximumZoomScale = 1
+        canvas.minimumZoomScale = 0.5
+        canvas.maximumZoomScale = 3
+        canvas.pinchGestureRecognizer?.isEnabled = false
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.delegate = self
         canvas.tool = PKInkingTool(.pen, color: .black, width: 2.5)
         canvas.accessibilityIdentifier = "ink-canvas-\(nodeId)"
-        contentView.addSubview(canvas)
+        addSubview(canvas)
         NSLayoutConstraint.activate([
-            canvas.topAnchor.constraint(equalTo: contentView.topAnchor),
-            canvas.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            canvas.topAnchor.constraint(equalTo: topAnchor),
+            canvas.leadingAnchor.constraint(equalTo: leadingAnchor),
+            canvas.trailingAnchor.constraint(equalTo: trailingAnchor),
+            canvas.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
 
         #if DEBUG
@@ -209,9 +240,9 @@ final class AnnotatedReaderView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard scroll.bounds.width > 1, scroll.bounds.height > 1,
+        guard canvas.bounds.width > 1, canvas.bounds.height > 1,
               !isApplyingViewport else { return }
-        let size = scroll.bounds.size
+        let size = canvas.bounds.size
         switch viewportState {
         case .uninitialized:
             applyViewport(resetToTop: true)
@@ -226,48 +257,72 @@ final class AnnotatedReaderView: UIView {
                 applyViewport(resetToTop: false)
                 viewportState = .fittedPreservingPosition
             } else {
+                // 兜底重申：对抗 translates 视图被 autolayout 回写 frame 的一过性竞争。
                 lockHorizontalOffset()
+                syncDocumentMirror()
             }
         }
         lastViewportSize = size
     }
 
+    /// 唯一允许写 Canvas 视口几何的入口。顺序冻结（v3 包 05 §二）：
+    /// zoom → contentSize(display 单位) → clamp offset。
     private func applyViewport(resetToTop: Bool) {
-        guard scroll.bounds.width > 1, scroll.bounds.height > 1 else { return }
+        guard canvas.bounds.width > 1, canvas.bounds.height > 1 else { return }
         isApplyingViewport = true
         defer { isApplyingViewport = false }
 
-        let oldScale = max(scroll.zoomScale, 0.001)
+        let oldScale = max(canvas.zoomScale, 0.001)
         let oldCanonicalTop = resetToTop
             ? 0
-            : ReaderViewportMath.canonicalTopY(contentOffsetY: scroll.contentOffset.y,
+            : ReaderViewportMath.canonicalTopY(contentOffsetY: canvas.contentOffset.y,
                                                scale: oldScale)
-        let targetScale = ReaderViewportMath.fitWidthScale(
-            viewportWidth: scroll.bounds.width,
+        let z = ReaderViewportMath.fitWidthScale(
+            viewportWidth: canvas.bounds.width,
             pageWidth: typography.canonicalPageWidth)
 
-        scroll.contentInset = .zero
-        scroll.scrollIndicatorInsets = .zero
-        scroll.minimumZoomScale = targetScale
-        scroll.maximumZoomScale = targetScale
-        scroll.setZoomScale(targetScale, animated: false)
-        scroll.layoutIfNeeded()
+        canvas.contentInset = .zero
+        canvas.scrollIndicatorInsets = .zero
+        canvas.minimumZoomScale = z
+        canvas.maximumZoomScale = z
+        canvas.setZoomScale(z, animated: false)
+        // contentSize 必须以生效后的 z 计算（display 单位 = canonical × z）。
+        canvas.contentSize = ReaderViewportMath.displayContentSize(
+            documentSize: documentSize, scale: z)
+        canvas.layoutIfNeeded()
 
+        // offset 夹取放在 contentSize 确定之后（旋转保持阅读位置）。
         let newY = resetToTop
             ? 0
             : ReaderViewportMath.clampedOffsetY(
                 canonicalTopY: oldCanonicalTop,
-                scale: targetScale,
-                contentSizeHeight: scroll.contentSize.height,
-                viewportHeight: scroll.bounds.height)
-        scroll.setContentOffset(CGPoint(x: 0, y: newY), animated: false)
+                scale: z,
+                contentSizeHeight: canvas.contentSize.height,
+                viewportHeight: canvas.bounds.height)
+        canvas.setContentOffset(CGPoint(x: 0, y: newY), animated: false)
         lockHorizontalOffset()
+        syncDocumentMirror()
+    }
+
+    /// 把 Canvas 拥有的视口单向镜像到只读文档层：anchor .zero、position −offset、
+    /// transform scale(z)，使 canonical P 渲染于 P·z − offset —— 与 Canvas 逐点一致。
+    private func syncDocumentMirror() {
+        guard canvas.zoomScale > 0 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentView.bounds = CGRect(origin: .zero, size: documentSize)
+        contentView.layer.anchorPoint = .zero
+        contentView.layer.position = ReaderViewportMath.documentLayerPosition(
+            contentOffset: canvas.contentOffset)
+        contentView.layer.setAffineTransform(
+            ReaderViewportMath.documentLayerTransform(scale: canvas.zoomScale))
+        CATransaction.commit()
     }
 
     private func lockHorizontalOffset() {
         guard !isApplyingViewport else { return }
-        if abs(scroll.contentOffset.x) > 0.5 {
-            scroll.contentOffset.x = 0
+        if abs(canvas.contentOffset.x) > 0.5 {
+            canvas.contentOffset.x = 0
         }
     }
 
@@ -300,9 +355,11 @@ final class AnnotatedReaderView: UIView {
                    width: typography.canonicalPageWidth,
                    height: typography.canonicalPageHeight)
         }
-        contentHeightConstraint.constant = max(typography.canonicalPageHeight,
-                                                CGFloat(pageBlocks.count) * typography.canonicalPageHeight
-                                                + CGFloat(max(0, pageBlocks.count - 1)) * typography.pageGap)
+        let documentHeight = max(typography.canonicalPageHeight,
+                                 CGFloat(pageBlocks.count) * typography.canonicalPageHeight
+                                 + CGFloat(max(0, pageBlocks.count - 1)) * typography.pageGap)
+        documentSize = CGSize(width: typography.canonicalPageWidth, height: documentHeight)
+        contentView.bounds = CGRect(origin: .zero, size: documentSize)
         for (index, blocksForPage) in pageBlocks.enumerated() {
             let page = ReaderPageView(index: index, typography: typography)
             page.install(blocks: blocksForPage.map(\.view), gaps: blocksForPage.map(\.gapBefore))
@@ -452,11 +509,10 @@ final class AnnotatedReaderView: UIView {
         return stack
     }
 
+    /// 只赋 drawing 与 revision 标记；零几何副作用（渲染完成由
+    /// canvasViewDidFinishRendering 补镜像同步）。
     func loadInk(drawing: PKDrawing?, revision: Int) {
         canvas.drawing = drawing ?? PKDrawing()
-        canvas.contentInset = .zero
-        canvas.contentOffset = .zero
-        canvas.zoomScale = 1
         currentInkRevision = revision
         inkDirty = false
     }
@@ -484,22 +540,32 @@ extension AnnotatedReaderView: PKCanvasViewDelegate {
         delegate?.readerInkChanged(self)
     }
 
-    #if DEBUG
     func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
+        // PencilKit 赋值/滚动/缩放后异步渲染完成；此时镜像已 canonical 的视口，
+        // 绝不改写 drawing 或重置 Canvas 几何。
+        syncDocumentMirror()
+        #if DEBUG
         probeSnapshot(event: "render-finished")
+        #endif
     }
-    #endif
 }
 
 extension AnnotatedReaderView: UIScrollViewDelegate {
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? { contentView }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === canvas else { return }
         lockHorizontalOffset()
+        syncDocumentMirror()
+    }
+
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        guard scrollView === canvas else { return }
+        lockHorizontalOffset()
+        syncDocumentMirror()
     }
 }
 
 // MARK: - Phase 0 只读取证探针（v3 包 04 号）
-// 记录 hover 事件与双重视口几何到 Documents/hover-probe.jsonl；不绘制任何
+// 记录 hover 事件与 Canvas 视口几何到 Documents/hover-probe.jsonl；不绘制任何
 // 假笔迹/覆盖层，不改变正式行为；按 11 号交付报告明示移除或保留。
 #if DEBUG
 extension AnnotatedReaderView {
@@ -553,24 +619,19 @@ extension AnnotatedReaderView {
         func rect(_ r: CGRect) -> [Double] {
             [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)]
         }
-        func affine(_ t: CGAffineTransform?) -> [Double]? {
-            guard let t else { return nil }
-            return [Double(t.a), Double(t.b), Double(t.c), Double(t.d), Double(t.tx), Double(t.ty)]
+        func affine(_ t: CGAffineTransform) -> [Double] {
+            [Double(t.a), Double(t.b), Double(t.c), Double(t.d), Double(t.tx), Double(t.ty)]
         }
         var g: [String: Any] = [
-            "scroll_zoom": Double(scroll.zoomScale),
             "canvas_zoom": Double(canvas.zoomScale),
-            "scroll_offset": pt(scroll.contentOffset),
             "canvas_offset": pt(canvas.contentOffset),
-            "scroll_bounds": rect(scroll.bounds),
             "canvas_bounds": rect(canvas.bounds),
-            "canvas_frame": rect(canvas.frame),        // canvas 在 contentView 坐标系（旧架构随外层 zoom 变化）
-            "content_frame": rect(contentView.frame),  // zooming view frame == canonical×zoom 的直接证据
+            "canvas_frame": rect(canvas.frame),
             "content_bounds": rect(contentView.bounds),
+            "mirror_position": pt(contentView.layer.position),
+            "mirror_affine": affine(contentView.layer.affineTransform()),
         ]
-        if let t = scroll.layer.presentation()?.affineTransform() { g["scroll_present"] = affine(t) }
         if let t = canvas.layer.presentation()?.affineTransform() { g["canvas_present"] = affine(t) }
-        g["content_affine"] = affine(contentView.layer.affineTransform())
         return g
     }
 
