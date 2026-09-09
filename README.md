@@ -29,11 +29,13 @@
 │   ├── cli.py  test_e2e.py  README.md
 │   └── lsys/                  # schema / db / goal_compiler / scheduler /
 │                              # engines / probe_compiler / review_engine / rebuilder / materials_rag
-└── 提示词规划/                # 全部 Prompt 包（构建期 + 运行期）
+└── 提示词规划/                # 全部 Prompt 包（构建期 + 运行期 + 修复期）
     ├── 试题库最终扩展Prompt_V4/          # 题库扩展规范（构建题库用）
     ├── 试题库纠错QA_Prompt_V1/           # 题库纠错 QA 规范
     ├── 秋招智能学习与复习体系_V1_构建Prompt/  # 系统构建规范
-    └── 秋招智能学习与复习体系_RuntimePrompt_V1/  # ★ 运行期 Prompt 包（日常学习用）
+    ├── 秋招智能学习与复习体系_启动Prompt_V1/  # ★ 系统启动/自检/双端装机/排障
+    ├── 秋招智能学习与复习体系_RuntimePrompt_V1/  # ★ 运行期 Prompt 包（日常学习用）
+    └── Pencil悬停预览*/修复两个问题/ …    # 历次修复实施包（取证+交付留档）
 ```
 
 ## 二、三大内容资产
@@ -49,8 +51,9 @@
 - `materials.sqlite3`：Document → Section → Concept 三级切块 + **FTS5（trigram 中文全文）** + **语义向量**双路检索、词项稀缺度加权融合、Small-to-Big 父块补上下文（克隆仓库后放入资料并运行 `expand-materials` 即可重建）
 - 学习时按需检索最小充分知识（G1~G6 动态粒度），**不预生成固定 AI 摘要**；内容政策：跳过模拟题/README
 
-### 3. 提示词规划 —— 构建期与运行期 Prompt 包
+### 3. 提示词规划 —— 构建期 / 启动期 / 运行期 Prompt 包
 - 构建期：题库扩展 V4 / 题库纠错 QA V1 / 学习体系构建 V1（均已执行完毕，留档可复现）
+- **启动期：`秋招智能学习与复习体系_启动Prompt_V1/`** —— 新 AI 首次接管的环境自检、学习核心健康检查、双端（daemon + iPad）启动装机、连接验证与故障速查
 - **运行期：`秋招智能学习与复习体系_RuntimePrompt_V1/`** —— 日常每个学习会话的执行契约（调度、三引擎教学、复习、事件记录、会话恢复等 20+ 份）
 
 ## 三、系统如何运转
@@ -90,6 +93,7 @@ Goal Stack ──→ Temporal Scheduler ──→ 下一项 TaskIntent
 - `DualEnd-Mac/`：Node 守护进程。QuestionGraph canonical store（CENTER 正方 / EXPLANATION 圆 / TEMPORARY 三角）、localhost Agent CLI、Bonjour `_qiuzhaoreview._tcp` 广播、WebSocket v1、Snapshot/Patch 同步、Ink 备份。
 - `DualEnd-iPad/`：iPadOS App（Xcode 工程 `QiuZhaoReader.xcodeproj`）。问题图 Topology（拖动/改标题/删除）、Markdown 只读 Reader + Apple Pencil 批注（PencilKit，按 node_id 绑定）、离线 cache + outbox、零配对自动发现。
 - 启动：`node DualEnd-Mac/bin/qreview-dual.mjs daemon start`；Agent 协作契约见 RuntimePrompt `21_双端问题图与iPad协作协议.md`；验收与状态见 `双端Release验收清单.md`、`双端更新实施状态.md`。
+- 2026-09-10：Reader 的 Apple Pencil **近屏实时渲染偏移**（双重视口基准分裂）与**双击节点卡死**（`@Published` 同值写入反馈死循环）双根因修复完成，真机验收通过——Reader 现为"PKCanvasView 唯一视口 owner"单一变换架构（`screen(P)=P·z−offset`），取证与交付见 `提示词规划/Pencil悬停预览修复实施_v3/`；测试基线 32/32。系统启动/装机/排障一体化指引见 `提示词规划/秋招智能学习与复习体系_启动Prompt_V1/`。
 
 ## 四、开始使用（日常对话）
 
@@ -128,6 +132,7 @@ python3 学习系统/test_e2e.py             # 21 项端到端验收(临时环�
 - Active Goal：**25-Day Autumn Recruitment Coverage**（COVERAGE_FIRST，2026-09-04 ~ 09-29）
 - 学习事件落库：Knowledge 9 项 LEARNING_VERIFIED / Algorithms 2 项 / Projects 1 项，其余挂 LEARNING 或 Repair
 - 复习 Capsule 17 个已进入时序（Knowledge 14 / Algorithms 2 / Projects 1），进度随时以 `scheduler.sqlite3` 与三引擎库为准
+- 双端：Pencil 悬停偏移与节点卡死已修复并真机验收（2026-09-10，v3 实施包）；日常以 `提示词规划/秋招智能学习与复习体系_启动Prompt_V1/` 启动与排障
 
 ## 七、许可与说明
 
