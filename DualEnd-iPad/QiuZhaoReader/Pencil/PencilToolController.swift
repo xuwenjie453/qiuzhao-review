@@ -6,6 +6,7 @@ import PencilKit
 final class PencilToolController: NSObject, UIPencilInteractionDelegate, ObservableObject {
     @Published var isEraser = false
     private var inkTool: PKTool
+    private weak var canvas: PKCanvasView?
 
     override init() {
         inkTool = PKInkingTool(.pen, color: .black, width: 2.5)
@@ -13,6 +14,10 @@ final class PencilToolController: NSObject, UIPencilInteractionDelegate, Observa
     }
 
     func attach(to view: UIView) {
+        if let canvasView = view as? PKCanvasView {
+            if canvas === canvasView { return }
+            canvas = canvasView
+        }
         let interaction = UIPencilInteraction()
         interaction.delegate = self
         view.addInteraction(interaction)
@@ -24,6 +29,9 @@ final class PencilToolController: NSObject, UIPencilInteractionDelegate, Observa
             isEraser = false
         } else {
             isEraser = true
+        }
+        if let canvas {
+            apply(to: canvas, isEraser: isEraser)
         }
     }
 

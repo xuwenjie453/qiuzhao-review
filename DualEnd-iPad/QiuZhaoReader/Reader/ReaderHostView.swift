@@ -14,7 +14,10 @@ struct ReaderHostView: View {
     @State private var eraser = false
     @State private var vcHolder = ReaderHostHolder()
     @State private var configured = false
-    private let pencil = PencilToolController()
+    // Keep one Pencil controller for the lifetime of this Reader route. A
+    // plain `let` on a SwiftUI value view can be recreated during updates,
+    // which would lose the UIPencilInteraction delegate and tool state.
+    @StateObject private var pencil = PencilToolController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -107,6 +110,7 @@ struct ReaderContainer: UIViewControllerRepresentable {
         var lastConfiguredMarkdown: String?
         var lastDrawingData: Data?
         var onDirtyFlush: ((Data) -> Void)?
+        weak var attachedCanvas: PKCanvasView?
     }
 
     func makeUIViewController(context: Context) -> ReaderHostVC {
@@ -135,6 +139,10 @@ struct ReaderContainer: UIViewControllerRepresentable {
         // Representable 的首次 update 可能早于 configure；不要解包尚未创建的
         // AnnotatedReaderView，否则双击节点进入 Reader 会直接闪退。
         if let readerView = vc.readerView {
+            if co.attachedCanvas !== readerView.canvas {
+                pencil.attach(to: readerView.canvas)
+                co.attachedCanvas = readerView.canvas
+            }
             pencil.apply(to: readerView.canvas, isEraser: eraser)
         }
         co.onDirtyFlush = dirtyFlush

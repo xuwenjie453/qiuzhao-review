@@ -245,4 +245,33 @@ final class ReaderViewportTests: XCTestCase {
                                                          viewportHeight: 800)
         XCTAssertEqual(restored, 1000, accuracy: 0.0001)
     }
+
+    func testCanvasOwnedViewportRoundTripsCanonicalPoint() {
+        let canonical = CGPoint(x: 123.5, y: 660.25)
+        let offset = CGPoint(x: 0, y: 420)
+        let displayed = ReaderViewportMath.displayPoint(from: canonical,
+                                                         scale: 2,
+                                                         contentOffset: offset)
+        let restored = ReaderViewportMath.canonicalPoint(from: displayed,
+                                                         scale: 2,
+                                                         contentOffset: offset)
+        XCTAssertEqual(restored.x, canonical.x, accuracy: 0.0001)
+        XCTAssertEqual(restored.y, canonical.y, accuracy: 0.0001)
+    }
+
+    func testHoverScaleMismatchChangesSignAcrossPage() {
+        let scale = 2.0
+        let hoverScale = 1.9
+        let anchor = CGPoint(x: 297, y: 420)
+        func aroundAnchor(_ point: CGPoint, _ s: CGFloat) -> CGPoint {
+            CGPoint(x: anchor.x + (point.x - anchor.x) * s,
+                    y: anchor.y + (point.y - anchor.y) * s)
+        }
+        let top = aroundAnchor(CGPoint(x: 297, y: 180), hoverScale)
+        let actualTop = aroundAnchor(CGPoint(x: 297, y: 180), scale)
+        let bottom = aroundAnchor(CGPoint(x: 297, y: 660), hoverScale)
+        let actualBottom = aroundAnchor(CGPoint(x: 297, y: 660), scale)
+        XCTAssertGreaterThan(top.y - actualTop.y, 0)
+        XCTAssertLessThan(bottom.y - actualBottom.y, 0)
+    }
 }

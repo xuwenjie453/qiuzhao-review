@@ -1,6 +1,6 @@
 // AnnotatedReaderView —— A4 PDF-like Reader + PencilKit。
-// Outer UIScrollView 是唯一滚动/缩放 owner；PageView 内的文字和 Canvas
-// 共享同一 canonical page 坐标。页面外 gutter 不属于可写文档。
+// PKCanvasView 是唯一滚动/缩放 owner；只读正文作为它的同步底层。
+// 这样 Pencil hover、正式落笔和历史 PKDrawing 都走 PencilKit 自己的 viewport。
 import UIKit
 import PencilKit
 
@@ -24,6 +24,19 @@ enum ReaderViewportMath {
         let maximum = max(0, contentSizeHeight - viewportHeight)
         return min(max(proposed, 0), maximum)
     }
+
+    static func displayPoint(from canonical: CGPoint, scale: CGFloat,
+                             contentOffset: CGPoint) -> CGPoint {
+        CGPoint(x: canonical.x * scale - contentOffset.x,
+                y: canonical.y * scale - contentOffset.y)
+    }
+
+    static func canonicalPoint(from display: CGPoint, scale: CGFloat,
+                               contentOffset: CGPoint) -> CGPoint {
+        let safeScale = max(scale, 0.001)
+        return CGPoint(x: (display.x + contentOffset.x) / safeScale,
+                       y: (display.y + contentOffset.y) / safeScale)
+    }
 }
 
 protocol AnnotatedReaderDelegate: AnyObject {
@@ -31,13 +44,19 @@ protocol AnnotatedReaderDelegate: AnyObject {
     func readerNeedsFlush(_ view: AnnotatedReaderView)
 }
 
-/// PKCanvasView 本身是 UIScrollView 子类，但在这里只作为 document-space ink layer。
-/// 通过 hitTest 把输入限制在 A4 白纸内部，避免页面外灰色 gutter 被误写。
+/// PKCanvasView 同时拥有 PencilKit drawing viewport 和 Reader 的纵向滚动。
+/// 手指始终可滚动；只有 Pencil 落笔才受 A4 白纸范围限制。
 final class PageCanvasView: PKCanvasView {
     var allowedPageRects: [CGRect] = []
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard allowedPageRects.contains(where: { $0.contains(point) }) else { return nil }
+        if let touch = event?.allTouches?.first, touch.type == .pencil {
+            let documentPoint = ReaderViewportMath.canonicalPoint(
+                from: point, scale: zoomScale, contentOffset: .zero)
+            guard allowedPageRects.contains(where: { $0.contains(documentPoint) }) else {
+                return nil
+            }
+        }
         return super.hitTest(point, with: event)
     }
 }
@@ -109,12 +128,11 @@ final class AnnotatedReaderView: UIView {
     let canvas = PageCanvasView()
     let layoutSignature: String
 
-    private let scroll = UIScrollView()
     private let contentView = UIView()
-    private var contentHeightConstraint: NSLayoutConstraint!
     private let typography = ReaderTypography.shared
     private var pageRects: [CGRect] = []
     private var pageViews: [ReaderPageView] = []
+    private var documentSize: CGSize
     private enum ViewportState { case uninitialized, fittedAtTop, fittedPreservingPosition }
     private var viewportState: ViewportState = .uninitialized
     private var lastViewportSize: CGSize = .zero
@@ -131,6 +149,8 @@ final class AnnotatedReaderView: UIView {
     init(nodeId: String, markdown: String) {
         self.nodeId = nodeId
         self.layoutSignature = typography.layoutSignature
+        self.documentSize = CGSize(width: typography.canonicalPageWidth,
+                                   height: typography.canonicalPageHeight)
         super.init(frame: .zero)
         backgroundColor = .secondarySystemBackground
         build(markdown: markdown)
@@ -139,69 +159,55 @@ final class AnnotatedReaderView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func build(markdown: String) {
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.delegate = self
-        scroll.contentInsetAdjustmentBehavior = .never
-        scroll.alwaysBounceVertical = true
-        scroll.alwaysBounceHorizontal = false
-        scroll.bounces = true
-        scroll.isDirectionalLockEnabled = true
-        scroll.showsHorizontalScrollIndicator = false
-        scroll.showsVerticalScrollIndicator = true
-        scroll.contentInset = .zero
-        scroll.scrollIndicatorInsets = .zero
-        scroll.minimumZoomScale = 0.5
-        scroll.maximumZoomScale = 3
-        scroll.pinchGestureRecognizer?.isEnabled = false
-        addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
-
-        contentView.translatesAutoresizingMaskIntoConstraints = false
+        // The document is a noninteractive sibling underneath the transparent
+        // canvas. Its presentation is driven from the canvas viewport, so the
+        // canvas itself never sits below an ancestor zoom transform.
+        contentView.translatesAutoresizingMaskIntoConstraints = true
         contentView.backgroundColor = .clear
-        scroll.addSubview(contentView)
-        contentHeightConstraint = contentView.heightAnchor.constraint(equalToConstant: typography.canonicalPageHeight)
-        NSLayoutConstraint.activate([
-            contentView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            contentView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            contentView.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            contentView.widthAnchor.constraint(equalToConstant: typography.canonicalPageWidth),
-            contentHeightConstraint,
-        ])
+        contentView.isUserInteractionEnabled = false
+        contentView.bounds = CGRect(origin: .zero, size: documentSize)
+        contentView.layer.anchorPoint = .zero
+        contentView.layer.position = .zero
+        addSubview(contentView)
 
         // 先放 page，再放 Canvas，确保 page background/文字不遮住 PencilKit。
         renderDocument(markdown)
         canvas.translatesAutoresizingMaskIntoConstraints = false
         canvas.drawingPolicy = .pencilOnly
-        canvas.isScrollEnabled = false
+        canvas.allowsFingerDrawing = false
+        canvas.isScrollEnabled = true
+        canvas.bounces = true
+        canvas.alwaysBounceHorizontal = false
+        canvas.alwaysBounceVertical = true
+        canvas.isDirectionalLockEnabled = true
+        canvas.contentInsetAdjustmentBehavior = .never
+        canvas.showsHorizontalScrollIndicator = false
+        canvas.showsVerticalScrollIndicator = true
         canvas.contentInset = .zero
+        canvas.scrollIndicatorInsets = .zero
         canvas.contentOffset = .zero
-        canvas.minimumZoomScale = 1
-        canvas.maximumZoomScale = 1
+        canvas.minimumZoomScale = 0.5
+        canvas.maximumZoomScale = 3
+        canvas.pinchGestureRecognizer?.isEnabled = false
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.delegate = self
         canvas.tool = PKInkingTool(.pen, color: .black, width: 2.5)
         canvas.accessibilityIdentifier = "ink-canvas-\(nodeId)"
-        contentView.addSubview(canvas)
+        addSubview(canvas)
         NSLayoutConstraint.activate([
-            canvas.topAnchor.constraint(equalTo: contentView.topAnchor),
-            canvas.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            canvas.topAnchor.constraint(equalTo: topAnchor),
+            canvas.leadingAnchor.constraint(equalTo: leadingAnchor),
+            canvas.trailingAnchor.constraint(equalTo: trailingAnchor),
+            canvas.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard scroll.bounds.width > 1, scroll.bounds.height > 1,
+        guard canvas.bounds.width > 1, canvas.bounds.height > 1,
               !isApplyingViewport else { return }
-        let size = scroll.bounds.size
+        let size = canvas.bounds.size
         switch viewportState {
         case .uninitialized:
             applyViewport(resetToTop: true)
@@ -214,47 +220,67 @@ final class AnnotatedReaderView: UIView {
                 viewportState = .fittedPreservingPosition
             } else {
                 lockHorizontalOffset()
+                syncDocumentPresentation()
             }
         }
         lastViewportSize = size
     }
 
     private func applyViewport(resetToTop: Bool) {
-        guard scroll.bounds.width > 1, scroll.bounds.height > 1 else { return }
+        guard canvas.bounds.width > 1, canvas.bounds.height > 1 else { return }
         isApplyingViewport = true
         defer { isApplyingViewport = false }
 
-        let oldScale = max(scroll.zoomScale, 0.001)
+        let oldScale = max(canvas.zoomScale, 0.001)
         let oldCanonicalTop = resetToTop
             ? 0
-            : ReaderViewportMath.canonicalTopY(contentOffsetY: scroll.contentOffset.y,
+            : ReaderViewportMath.canonicalTopY(contentOffsetY: canvas.contentOffset.y,
                                                scale: oldScale)
         let targetScale = ReaderViewportMath.fitWidthScale(
-            viewportWidth: scroll.bounds.width,
+            viewportWidth: canvas.bounds.width,
             pageWidth: typography.canonicalPageWidth)
 
-        scroll.contentInset = .zero
-        scroll.scrollIndicatorInsets = .zero
-        scroll.minimumZoomScale = targetScale
-        scroll.maximumZoomScale = targetScale
-        scroll.setZoomScale(targetScale, animated: false)
-        scroll.layoutIfNeeded()
+        canvas.contentInset = .zero
+        canvas.scrollIndicatorInsets = .zero
+        canvas.contentSize = documentSize
+        canvas.minimumZoomScale = targetScale
+        canvas.maximumZoomScale = targetScale
+        canvas.setZoomScale(targetScale, animated: false)
+        canvas.layoutIfNeeded()
 
         let newY = resetToTop
             ? 0
             : ReaderViewportMath.clampedOffsetY(
                 canonicalTopY: oldCanonicalTop,
                 scale: targetScale,
-                contentSizeHeight: scroll.contentSize.height,
-                viewportHeight: scroll.bounds.height)
-        scroll.setContentOffset(CGPoint(x: 0, y: newY), animated: false)
+                contentSizeHeight: canvas.contentSize.height,
+                viewportHeight: canvas.bounds.height)
+        canvas.setContentOffset(CGPoint(x: 0, y: newY), animated: false)
         lockHorizontalOffset()
+        syncDocumentPresentation()
+    }
+
+    /// Mirror the canvas-owned viewport onto the read-only document. PencilKit
+    /// remains untransformed by any ancestor view, while text and paper follow
+    /// exactly the same scale and offset for visual registration.
+    private func syncDocumentPresentation() {
+        guard canvas.zoomScale > 0 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentView.bounds = CGRect(origin: .zero, size: documentSize)
+        contentView.layer.anchorPoint = .zero
+        contentView.layer.position = CGPoint(x: -canvas.contentOffset.x,
+                                             y: -canvas.contentOffset.y)
+        contentView.layer.setAffineTransform(
+            CGAffineTransform(scaleX: canvas.zoomScale, y: canvas.zoomScale))
+        contentView.layoutIfNeeded()
+        CATransaction.commit()
     }
 
     private func lockHorizontalOffset() {
         guard !isApplyingViewport else { return }
-        if abs(scroll.contentOffset.x) > 0.5 {
-            scroll.contentOffset.x = 0
+        if abs(canvas.contentOffset.x) > 0.5 {
+            canvas.contentOffset.x = 0
         }
     }
 
@@ -287,9 +313,12 @@ final class AnnotatedReaderView: UIView {
                    width: typography.canonicalPageWidth,
                    height: typography.canonicalPageHeight)
         }
-        contentHeightConstraint.constant = max(typography.canonicalPageHeight,
-                                                CGFloat(pageBlocks.count) * typography.canonicalPageHeight
-                                                + CGFloat(max(0, pageBlocks.count - 1)) * typography.pageGap)
+        let documentHeight = max(typography.canonicalPageHeight,
+                                 CGFloat(pageBlocks.count) * typography.canonicalPageHeight
+                                 + CGFloat(max(0, pageBlocks.count - 1)) * typography.pageGap)
+        documentSize = CGSize(width: typography.canonicalPageWidth, height: documentHeight)
+        contentView.bounds = CGRect(origin: .zero, size: documentSize)
+        canvas.contentSize = documentSize
         for (index, blocksForPage) in pageBlocks.enumerated() {
             let page = ReaderPageView(index: index, typography: typography)
             page.install(blocks: blocksForPage.map(\.view), gaps: blocksForPage.map(\.gapBefore))
@@ -441,9 +470,6 @@ final class AnnotatedReaderView: UIView {
 
     func loadInk(drawing: PKDrawing?, revision: Int) {
         canvas.drawing = drawing ?? PKDrawing()
-        canvas.contentInset = .zero
-        canvas.contentOffset = .zero
-        canvas.zoomScale = 1
         currentInkRevision = revision
         inkDirty = false
     }
@@ -470,11 +496,25 @@ extension AnnotatedReaderView: PKCanvasViewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
         delegate?.readerInkChanged(self)
     }
+
+    func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
+        // Assignment, scrolling and zooming render asynchronously inside
+        // PencilKit. Only mirror the already-canonical viewport; never rewrite
+        // drawing points or reset the canvas geometry here.
+        syncDocumentPresentation()
+    }
 }
 
-extension AnnotatedReaderView: UIScrollViewDelegate {
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? { contentView }
+extension AnnotatedReaderView {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === canvas else { return }
         lockHorizontalOffset()
+        syncDocumentPresentation()
+    }
+
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        guard scrollView === canvas else { return }
+        lockHorizontalOffset()
+        syncDocumentPresentation()
     }
 }
