@@ -1,0 +1,128 @@
+{
+  "source": "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/QiuZhaoReader/App/AppSessionModel.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "问题图",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 245
+        }
+      },
+      {
+        "comment": "",
+        "key": "自动发现 Mac 学习守护进程",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 305
+        }
+      },
+      {
+        "comment": "",
+        "key": "用于自动发现同一局域网中的 Mac 学习守护进程。",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 307
+        }
+      },
+      {
+        "comment": "",
+        "key": "继续",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 310
+        }
+      },
+      {
+        "comment": "",
+        "key": "节点",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 348
+        }
+      },
+      {
+        "comment": "",
+        "key": "标题（最多 80 字符）",
+        "location": {
+          "startingColumn": 25,
+          "startingLine": 329
+        }
+      },
+      {
+        "comment": "",
+        "key": "节点标题",
+        "location": {
+          "startingColumn": 31,
+          "startingLine": 330
+        }
+      },
+      {
+        "comment": "",
+        "key": "类型",
+        "location": {
+          "startingColumn": 35,
+          "startingLine": 334
+        }
+      },
+      {
+        "comment": "",
+        "key": "状态",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 336
+        }
+      },
+      {
+        "comment": "",
+        "key": "永久 · 题目中心",
+        "location": {
+          "startingColumn": 46,
+          "startingLine": 338
+        }
+      },
+      {
+        "comment": "",
+        "key": "本轮临时",
+        "location": {
+          "startingColumn": 100,
+          "startingLine": 338
+        }
+      },
+      {
+        "comment": "",
+        "key": "永久",
+        "location": {
+          "startingColumn": 117,
+          "startingLine": 338
+        }
+      },
+      {
+        "comment": "",
+        "key": "删除节点",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 344
+        }
+      },
+      {
+        "comment": "",
+        "key": "保存",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 351
+        }
+      },
+      {
+        "comment": "",
+        "key": "取消",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 358
+        }
+      }
+    ]
+  },
+  "version": 1
+}

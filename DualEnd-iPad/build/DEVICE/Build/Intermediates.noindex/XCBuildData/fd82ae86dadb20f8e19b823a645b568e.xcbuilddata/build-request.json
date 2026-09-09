@@ -1,0 +1,73 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildOnly"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "f710e1134234fdefc3f19bd0ed4f7220177a66226b34c77715ef7bbe075e783f"
+    }
+  ],
+  "containerPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/QiuZhaoReader.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "build",
+    "activeArchitecture" : "undefined_arch",
+    "activeRunDestination" : {
+      "disableOnlyActiveArch" : true,
+      "hostTargetedPlatform" : null,
+      "platform" : "iphoneos",
+      "sdk" : "iphoneos26.5",
+      "sdkVariant" : "iphoneos",
+      "supportedArchitectures" : [
+        "armv4t",
+        "armv5",
+        "armv6",
+        "armv7",
+        "armv7f",
+        "armv7s",
+        "armv7k",
+        "arm64",
+        "arm64e"
+      ],
+      "targetArchitecture" : "undefined_arch"
+    },
+    "arenaInfo" : {
+      "buildIntermediatesPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DEVICE/Build/Intermediates.noindex",
+      "buildProductsPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DEVICE/Build/Products",
+      "derivedDataPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DEVICE",
+      "indexDataStoreFolderPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DEVICE/Index.noindex/DataStore",
+      "indexEnableDataStore" : true,
+      "indexPCHPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DEVICE/Index.noindex/PrecompiledHeaders",
+      "pchPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DEVICE/Build/Intermediates.noindex/PrecompiledHeaders"
+    },
+    "configurationName" : "Debug",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "build",
+          "CLANG_COVERAGE_MAPPING" : "YES",
+          "CLANG_PROFILE_DATA_DIRECTORY" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DEVICE/Build/ProfileData",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_XOJIT_PREVIEWS" : "YES",
+          "ONLY_ACTIVE_ARCH" : "YES"
+        }
+      }
+    }
+  },
+  "schemeCommand" : "launch",
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : true,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : true
+}

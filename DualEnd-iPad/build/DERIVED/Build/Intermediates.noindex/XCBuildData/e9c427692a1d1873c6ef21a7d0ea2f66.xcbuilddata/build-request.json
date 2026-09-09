@@ -1,0 +1,73 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildOnly"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "f710e1134234fdefc3f19bd0ed4f7220177a66226b34c77715ef7bbe075e783f"
+    }
+  ],
+  "containerPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/QiuZhaoReader.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "build",
+    "activeArchitecture" : "arm64",
+    "activeRunDestination" : {
+      "disableOnlyActiveArch" : false,
+      "hostTargetedPlatform" : null,
+      "platform" : "iphonesimulator",
+      "sdk" : "iphonesimulator26.5",
+      "sdkVariant" : "iphonesimulator",
+      "supportedArchitectures" : [
+        "arm64"
+      ],
+      "targetArchitecture" : "arm64"
+    },
+    "arenaInfo" : {
+      "buildIntermediatesPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DERIVED/Build/Intermediates.noindex",
+      "buildProductsPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DERIVED/Build/Products",
+      "derivedDataPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DERIVED",
+      "indexDataStoreFolderPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DERIVED/Index.noindex/DataStore",
+      "indexEnableDataStore" : true,
+      "indexPCHPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DERIVED/Index.noindex/PrecompiledHeaders",
+      "pchPath" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DERIVED/Build/Intermediates.noindex/PrecompiledHeaders"
+    },
+    "configurationName" : "Debug",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+          "CODE_SIGNING_ALLOWED" : "NO"
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "build",
+          "ASSETCATALOG_FILTER_FOR_DEVICE_MODEL" : "iPad16,9",
+          "ASSETCATALOG_FILTER_FOR_DEVICE_OS_VERSION" : "26.5",
+          "ASSETCATALOG_FILTER_FOR_THINNING_DEVICE_CONFIGURATION" : "iPad16,9",
+          "BUILD_ACTIVE_RESOURCES_ONLY" : "YES",
+          "CLANG_COVERAGE_MAPPING" : "YES",
+          "CLANG_PROFILE_DATA_DIRECTORY" : "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/build/DERIVED/Build/ProfileData",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_XOJIT_PREVIEWS" : "YES",
+          "ONLY_ACTIVE_ARCH" : "YES",
+          "TARGET_DEVICE_IDENTIFIER" : "F1FD494E-8030-4D95-A909-156EC23009C8",
+          "TARGET_DEVICE_MODEL" : "iPad16,9",
+          "TARGET_DEVICE_OS_VERSION" : "26.5",
+          "TARGET_DEVICE_PLATFORM_NAME" : "iphonesimulator"
+        }
+      }
+    }
+  },
+  "schemeCommand" : "launch",
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : true,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : true
+}

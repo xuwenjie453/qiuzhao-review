@@ -1,0 +1,24 @@
+{
+  "source": "/Users/xuwenjie/Documents/秋招/复习体系/DualEnd-iPad/QiuZhaoReader/Topology/QuestionGraphView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "暂无问题图",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 157
+        }
+      },
+      {
+        "comment": "",
+        "key": "在 Mac 上开始讨论题目后，问题与解释会自动出现在这里；离线也可查看已缓存内容。",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 158
+        }
+      }
+    ]
+  },
+  "version": 1
+}
