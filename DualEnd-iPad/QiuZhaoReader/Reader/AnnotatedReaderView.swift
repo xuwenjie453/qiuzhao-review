@@ -202,8 +202,11 @@ final class AnnotatedReaderView: UIView {
         // 2) 正文页装入镜像层（canonical 坐标，不随显示缩放变化）。
         renderDocument(markdown)
 
-        // 3) Canvas：唯一滚动/缩放 owner，钉满四边；其上不再有任何祖先变换。
-        canvas.translatesAutoresizingMaskIntoConstraints = false
+        // 3) Canvas：唯一滚动/缩放 owner。frame 由 layoutSubviews 手动铺满
+        //    （本视图子树零内部约束，完全不进 autolayout 引擎——否则引擎会为
+        //    translates=true 的镜像层生成固定约束并每轮回写 frame，与手写镜像
+        //    几何互相触发重排，真机 runloop 下形成主线程布局死循环）。
+        canvas.translatesAutoresizingMaskIntoConstraints = true
         canvas.drawingPolicy = .pencilOnly
         canvas.allowsFingerDrawing = false
         canvas.isScrollEnabled = true
@@ -226,12 +229,6 @@ final class AnnotatedReaderView: UIView {
         canvas.tool = PKInkingTool(.pen, color: .black, width: 2.5)
         canvas.accessibilityIdentifier = "ink-canvas-\(nodeId)"
         addSubview(canvas)
-        NSLayoutConstraint.activate([
-            canvas.topAnchor.constraint(equalTo: topAnchor),
-            canvas.leadingAnchor.constraint(equalTo: leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
 
         #if DEBUG
         installHoverProbe()
@@ -240,8 +237,11 @@ final class AnnotatedReaderView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard canvas.bounds.width > 1, canvas.bounds.height > 1,
+        guard bounds.width > 1, bounds.height > 1,
               !isApplyingViewport else { return }
+        // 内部纯 frame 布局：canvas 铺满、镜像层手动几何，子树零约束。
+        canvas.frame = bounds
+        guard canvas.bounds.width > 1, canvas.bounds.height > 1 else { return }
         let size = canvas.bounds.size
         switch viewportState {
         case .uninitialized:
@@ -306,16 +306,22 @@ final class AnnotatedReaderView: UIView {
 
     /// 把 Canvas 拥有的视口单向镜像到只读文档层：anchor .zero、position −offset、
     /// transform scale(z)，使 canonical P 渲染于 P·z − offset —— 与 Canvas 逐点一致。
+    /// 值相等时零写入（避免无谓的 layer 几何变化再触发父视图重排）。
     private func syncDocumentMirror() {
         guard canvas.zoomScale > 0 else { return }
+        let targetPosition = ReaderViewportMath.documentLayerPosition(
+            contentOffset: canvas.contentOffset)
+        let targetTransform = ReaderViewportMath.documentLayerTransform(scale: canvas.zoomScale)
+        guard contentView.layer.position != targetPosition
+            || contentView.layer.affineTransform() != targetTransform
+            || contentView.bounds.size != documentSize
+            || contentView.layer.anchorPoint != .zero else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         contentView.bounds = CGRect(origin: .zero, size: documentSize)
         contentView.layer.anchorPoint = .zero
-        contentView.layer.position = ReaderViewportMath.documentLayerPosition(
-            contentOffset: canvas.contentOffset)
-        contentView.layer.setAffineTransform(
-            ReaderViewportMath.documentLayerTransform(scale: canvas.zoomScale))
+        contentView.layer.position = targetPosition
+        contentView.layer.setAffineTransform(targetTransform)
         CATransaction.commit()
     }
 

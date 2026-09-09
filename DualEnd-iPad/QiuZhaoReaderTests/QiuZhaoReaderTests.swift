@@ -416,4 +416,30 @@ final class ReaderSmokeTests: XCTestCase {
         XCTAssertEqual(canvas.contentOffset.y, o0.y, accuracy: 0.0001)
         XCTAssertEqual(canvas.contentInset, .zero)
     }
+
+    /// 真机“进不去节点/彻底卡死”回归守卫：布局必须收敛——多次强制 layout 后
+    /// canvas frame / zoom / 镜像几何稳定不震荡（手写镜像层与 autolayout 打架
+    /// 的死循环特征就是每轮值都在变）。
+    func testLayoutSettlesWithoutOscillation() throws {
+        let vc = makeConfiguredReader(frame: CGRect(x: 0, y: 0, width: 1180, height: 834),
+                                      markdown: longMarkdown(pages: 5))
+        let reader = try XCTUnwrap(vc.readerView)
+        let canvas = reader.canvas
+        XCTAssertEqual(canvas.frame, vc.view.bounds)
+        canvas.setContentOffset(CGPoint(x: 0, y: 360), animated: false)
+        let pos1 = reader.contentView.layer.position
+        let scale1 = reader.contentView.layer.affineTransform().a
+        let zoom1 = canvas.zoomScale
+        for _ in 0..<3 {
+            vc.view.setNeedsLayout()
+            vc.view.layoutIfNeeded()
+            reader.setNeedsLayout()
+            reader.layoutIfNeeded()
+        }
+        XCTAssertEqual(canvas.frame, vc.view.bounds)
+        XCTAssertEqual(canvas.zoomScale, zoom1, accuracy: 0.0001)
+        XCTAssertEqual(reader.contentView.layer.position.x, pos1.x, accuracy: 0.001)
+        XCTAssertEqual(reader.contentView.layer.position.y, pos1.y, accuracy: 0.001)
+        XCTAssertEqual(reader.contentView.layer.affineTransform().a, scale1, accuracy: 0.001)
+    }
 }
