@@ -2,6 +2,7 @@
 // 手势状态 reducer / 协议编解码 (M-14.4)。
 import XCTest
 import PencilKit
+import Combine
 @testable import QiuZhaoReader
 
 func jval(_ dict: [String: Any]) -> [String: JSONValue] {
@@ -441,5 +442,25 @@ final class ReaderSmokeTests: XCTestCase {
         XCTAssertEqual(reader.contentView.layer.position.x, pos1.x, accuracy: 0.001)
         XCTAssertEqual(reader.contentView.layer.position.y, pos1.y, accuracy: 0.001)
         XCTAssertEqual(reader.contentView.layer.affineTransform().a, scale1, accuracy: 0.001)
+    }
+}
+
+// MARK: - “双击即卡死”根因守卫：@Published 同值写入不得发布
+// （apply 在每次 SwiftUI update 中被调，无条件写 isEraser 会造成
+//  更新→objectWillChange→重渲染→更新 的主线程死循环）
+@MainActor
+final class PencilLoopGuardTests: XCTestCase {
+    func testApplyWithSameValueDoesNotPublish() {
+        let pencil = PencilToolController()
+        let canvas = PKCanvasView()
+        var fired = 0
+        let sink = pencil.objectWillChange.sink { _ in fired += 1 }
+        pencil.apply(to: canvas, isEraser: false)   // 与初值相同 → 不得发布
+        XCTAssertEqual(fired, 0)
+        pencil.apply(to: canvas, isEraser: true)    // 变化 → 发布一次
+        XCTAssertEqual(fired, 1)
+        pencil.apply(to: canvas, isEraser: true)    // 同值 → 不发布
+        XCTAssertEqual(fired, 1)
+        _ = sink
     }
 }

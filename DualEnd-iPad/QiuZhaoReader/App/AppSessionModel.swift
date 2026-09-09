@@ -64,7 +64,39 @@ final class AppSessionModel: ObservableObject {
         if !UserDefaults.standard.bool(forKey: "dualend.permission.note.shown") {
             showPermissionExplanation = true
         }
+        #if DEBUG
+        autoOpenReaderForDiagnostics()
+        #endif
     }
+
+    #if DEBUG
+    /// 仅诊断/无头复现（v3 包）：launch argument `-uiTestOpenReaderNode <node_id|title>`
+    /// 直接走"双击节点进 Reader"的同一条路由（readerRoute → fullScreenCover），
+    /// 用于复现与采样"双击即卡死"。不带参数时零行为。
+    func autoOpenReaderForDiagnostics() {
+        guard let arg = UserDefaults.standard.string(forKey: "uiTestOpenReaderNode"),
+              !arg.isEmpty else { return }
+        func tryOpen() -> Bool {
+            guard let snap = graphState.snapshot,
+                  let node = snap.nodes.first(where: { $0.nodeId == arg || $0.title == arg })
+            else { return false }
+            nodeDoubleTapped(node.nodeId)
+            return true
+        }
+        if tryOpen() { return }
+        // 缓存图异步加载，稍后重试
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            _ = self?.autoOpenRetry(arg: arg)
+        }
+    }
+    private func autoOpenRetry(arg: String) -> Bool {
+        guard let snap = graphState.snapshot,
+              let node = snap.nodes.first(where: { $0.nodeId == arg || $0.title == arg })
+        else { return false }
+        nodeDoubleTapped(node.nodeId)
+        return true
+    }
+    #endif
 
     /// daemon 偏好存 UserDefaults(同步可用, 免 actor 等待)
     static func preferredDaemonId() -> String? {
