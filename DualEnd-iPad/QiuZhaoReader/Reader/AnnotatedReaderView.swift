@@ -4,6 +4,28 @@
 import UIKit
 import PencilKit
 
+/// Pure viewport math shared by the UIKit implementation and unit tests.
+/// Document coordinates remain canonical; only the display scale changes.
+enum ReaderViewportMath {
+    static func fitWidthScale(viewportWidth: CGFloat, pageWidth: CGFloat,
+                              minimum: CGFloat = 0.5, maximum: CGFloat = 3.0) -> CGFloat {
+        guard viewportWidth > 0, pageWidth > 0 else { return minimum }
+        return min(max(viewportWidth / pageWidth, minimum), maximum)
+    }
+
+    static func canonicalTopY(contentOffsetY: CGFloat, scale: CGFloat) -> CGFloat {
+        guard scale > 0 else { return 0 }
+        return max(0, contentOffsetY / scale)
+    }
+
+    static func clampedOffsetY(canonicalTopY: CGFloat, scale: CGFloat,
+                               contentSizeHeight: CGFloat, viewportHeight: CGFloat) -> CGFloat {
+        let proposed = max(0, canonicalTopY) * max(scale, 0)
+        let maximum = max(0, contentSizeHeight - viewportHeight)
+        return min(max(proposed, 0), maximum)
+    }
+}
+
 protocol AnnotatedReaderDelegate: AnyObject {
     func readerInkChanged(_ view: AnnotatedReaderView)
     func readerNeedsFlush(_ view: AnnotatedReaderView)
@@ -93,7 +115,10 @@ final class AnnotatedReaderView: UIView {
     private let typography = ReaderTypography.shared
     private var pageRects: [CGRect] = []
     private var pageViews: [ReaderPageView] = []
-    private var zoomInitialized = false
+    private enum ViewportState { case uninitialized, fittedAtTop, fittedPreservingPosition }
+    private var viewportState: ViewportState = .uninitialized
+    private var lastViewportSize: CGSize = .zero
+    private var isApplyingViewport = false
     private var inkDirty = false
     private var debounceWork: DispatchWorkItem?
     private(set) var currentInkRevision = 0
@@ -117,10 +142,17 @@ final class AnnotatedReaderView: UIView {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.delegate = self
         scroll.contentInsetAdjustmentBehavior = .never
+        scroll.alwaysBounceVertical = true
         scroll.alwaysBounceHorizontal = false
+        scroll.bounces = true
+        scroll.isDirectionalLockEnabled = true
         scroll.showsHorizontalScrollIndicator = false
+        scroll.showsVerticalScrollIndicator = true
+        scroll.contentInset = .zero
+        scroll.scrollIndicatorInsets = .zero
         scroll.minimumZoomScale = 0.5
         scroll.maximumZoomScale = 3
+        scroll.pinchGestureRecognizer?.isEnabled = false
         addSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: topAnchor),
@@ -167,30 +199,62 @@ final class AnnotatedReaderView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard bounds.width > 1, bounds.height > 1 else { return }
-        let available = bounds.insetBy(dx: 16, dy: 16)
-        let fitScale = min(available.width / typography.canonicalPageWidth,
-                           available.height / typography.canonicalPageHeight)
-        let minimum = max(0.5, min(1, fitScale))
-        if abs(scroll.minimumZoomScale - minimum) > 0.001 {
-            scroll.minimumZoomScale = minimum
+        guard scroll.bounds.width > 1, scroll.bounds.height > 1,
+              !isApplyingViewport else { return }
+        let size = scroll.bounds.size
+        switch viewportState {
+        case .uninitialized:
+            applyViewport(resetToTop: true)
+            viewportState = .fittedAtTop
+        case .fittedAtTop, .fittedPreservingPosition:
+            let changed = abs(size.width - lastViewportSize.width) > 0.5
+                || abs(size.height - lastViewportSize.height) > 0.5
+            if changed {
+                applyViewport(resetToTop: false)
+                viewportState = .fittedPreservingPosition
+            } else {
+                lockHorizontalOffset()
+            }
         }
-        if !zoomInitialized {
-            zoomInitialized = true
-            scroll.setZoomScale(minimum, animated: false)
-        }
-        centerContent()
+        lastViewportSize = size
     }
 
-    private func centerContent() {
-        let scaledWidth = contentView.bounds.width * scroll.zoomScale
-        let gutter = max(0, (scroll.bounds.width - scaledWidth) / 2)
-        var inset = scroll.contentInset
-        if abs(inset.left - gutter) > 0.5 || abs(inset.right - gutter) > 0.5 {
-            inset.left = gutter
-            inset.right = gutter
-            scroll.contentInset = inset
-            scroll.scrollIndicatorInsets = inset
+    private func applyViewport(resetToTop: Bool) {
+        guard scroll.bounds.width > 1, scroll.bounds.height > 1 else { return }
+        isApplyingViewport = true
+        defer { isApplyingViewport = false }
+
+        let oldScale = max(scroll.zoomScale, 0.001)
+        let oldCanonicalTop = resetToTop
+            ? 0
+            : ReaderViewportMath.canonicalTopY(contentOffsetY: scroll.contentOffset.y,
+                                               scale: oldScale)
+        let targetScale = ReaderViewportMath.fitWidthScale(
+            viewportWidth: scroll.bounds.width,
+            pageWidth: typography.canonicalPageWidth)
+
+        scroll.contentInset = .zero
+        scroll.scrollIndicatorInsets = .zero
+        scroll.minimumZoomScale = targetScale
+        scroll.maximumZoomScale = targetScale
+        scroll.setZoomScale(targetScale, animated: false)
+        scroll.layoutIfNeeded()
+
+        let newY = resetToTop
+            ? 0
+            : ReaderViewportMath.clampedOffsetY(
+                canonicalTopY: oldCanonicalTop,
+                scale: targetScale,
+                contentSizeHeight: scroll.contentSize.height,
+                viewportHeight: scroll.bounds.height)
+        scroll.setContentOffset(CGPoint(x: 0, y: newY), animated: false)
+        lockHorizontalOffset()
+    }
+
+    private func lockHorizontalOffset() {
+        guard !isApplyingViewport else { return }
+        if abs(scroll.contentOffset.x) > 0.5 {
+            scroll.contentOffset.x = 0
         }
     }
 
@@ -410,5 +474,7 @@ extension AnnotatedReaderView: PKCanvasViewDelegate {
 
 extension AnnotatedReaderView: UIScrollViewDelegate {
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { contentView }
-    func scrollViewDidZoom(_ scrollView: UIScrollView) { centerContent() }
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        lockHorizontalOffset()
+    }
 }

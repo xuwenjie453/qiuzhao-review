@@ -215,3 +215,34 @@ final class TopologyLogicTests: XCTestCase {
         XCTAssertTrue(center?.isCenter ?? false)
     }
 }
+
+final class ReaderViewportTests: XCTestCase {
+    func testFitWidthScaleFillsLandscapeViewport() {
+        let scale = ReaderViewportMath.fitWidthScale(viewportWidth: 1180, pageWidth: 595.92)
+        XCTAssertEqual(595.92 * scale, 1180, accuracy: 0.5)
+        XCTAssertGreaterThan(scale, 1)
+    }
+
+    func testFitWidthScaleClampsInvalidOrExtremeWidths() {
+        XCTAssertEqual(ReaderViewportMath.fitWidthScale(viewportWidth: 0, pageWidth: 595.92), 0.5)
+        XCTAssertEqual(ReaderViewportMath.fitWidthScale(viewportWidth: 5000, pageWidth: 595.92), 3.0)
+    }
+
+    func testRotationPreservesCanonicalVerticalPositionAndLocksHorizontal() {
+        let canonical = ReaderViewportMath.canonicalTopY(contentOffsetY: 700, scale: 2)
+        XCTAssertEqual(canonical, 350, accuracy: 0.0001)
+        let restored = ReaderViewportMath.clampedOffsetY(canonicalTopY: canonical,
+                                                         scale: 1.5,
+                                                         contentSizeHeight: 4000,
+                                                         viewportHeight: 800)
+        XCTAssertEqual(restored, 525, accuracy: 0.0001)
+    }
+
+    func testRotationPositionClampsAtDocumentEnd() {
+        let restored = ReaderViewportMath.clampedOffsetY(canonicalTopY: 5000,
+                                                         scale: 2,
+                                                         contentSizeHeight: 1800,
+                                                         viewportHeight: 800)
+        XCTAssertEqual(restored, 1000, accuracy: 0.0001)
+    }
+}
