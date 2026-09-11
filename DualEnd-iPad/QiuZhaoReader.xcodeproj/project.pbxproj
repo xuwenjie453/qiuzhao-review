@@ -221,7 +221,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = GUS56DYZ6W;
+				DEVELOPMENT_TEAM = 6R3PZDAJGW;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = QiuZhaoReader/Resources/NetworkPermissions.plist;
@@ -236,7 +236,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad;
+				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -251,7 +251,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = GUS56DYZ6W;
+				DEVELOPMENT_TEAM = 6R3PZDAJGW;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = QiuZhaoReader/Resources/NetworkPermissions.plist;
@@ -266,7 +266,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad;
+				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -281,11 +281,12 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6R3PZDAJGW;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = QiuZhaoReader/Resources/NetworkPermissions.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad2.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -302,11 +303,12 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6R3PZDAJGW;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = QiuZhaoReader/Resources/NetworkPermissions.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.qiuzhaoreview.ipad2.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
