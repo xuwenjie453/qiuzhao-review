@@ -15,6 +15,27 @@ enum BonjourError: Error {
     case resolveFailed(String)
 }
 
+/// 静态端点直连（2026-09-13 新增）。
+/// 动机：VPN（TUN + fake-ip）会劫持 `.local` 主机名解析、干扰 mDNS，导致
+/// Bonjour 发现与连接随 VPN 状态漂移。Mac 的 IP 与 daemon bridge 端口固定后，
+/// 直连纯 IP:Port 完全绕开 mDNS + DNS 解析，VPN 只要不劫持局域网直连即无影响。
+/// 配置：`dualend.static.host` / `dualend.static.port` 覆盖默认值；
+/// `dualend.static.disabled = true` 整体关闭静态直连（回退纯 Bonjour）。
+enum StaticEndpoint {
+    static let defaultHost = "192.168.1.197"
+    static let defaultPort = 57689
+
+    static func resolve() -> (name: String, host: String, port: UInt16)? {
+        let d = UserDefaults.standard
+        if d.bool(forKey: "dualend.static.disabled") { return nil }
+        let host = (d.string(forKey: "dualend.static.host") ?? defaultHost)
+            .trimmingCharacters(in: .whitespaces)
+        let port = (d.object(forKey: "dualend.static.port") as? Int) ?? defaultPort
+        guard !host.isEmpty, (1...65535).contains(port) else { return nil }
+        return ("static://\(host):\(port)", host, UInt16(port))
+    }
+}
+
 final class BonjourBrowser {
     typealias ResolveCallback = (Result<ResolvedDaemon, BonjourError>) -> Void
 

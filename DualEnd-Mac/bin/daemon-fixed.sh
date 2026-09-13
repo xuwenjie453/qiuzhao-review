@@ -1,0 +1,73 @@
+#!/bin/bash
+# 双端 daemon 固定端口管理脚本（2026-09-13）
+#
+# 动机：iPad 端支持"静态端点直连"（StaticEndpoint，默认 192.168.1.197:57689），
+# 绕开 mDNS/DNS 解析以免疫 VPN 干扰。为此 bridge 端口必须固定。
+# 端口与 iPad 端 QiuZhaoReader/Connectivity/BonjourBrowser.swift 的
+# StaticEndpoint.defaultPort 保持一致 —— 改这里必须同步改那里。
+#
+# 用法:
+#   daemon-fixed.sh start    启动（固定端口 + nohup 脱离 + 清理旧广播）
+#   daemon-fixed.sh stop     优雅停止（含孤儿 dns-sd 清理）
+#   daemon-fixed.sh restart  重启
+#   daemon-fixed.sh status   状态
+set -o pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+CLI=(node "${REPO_ROOT}/DualEnd-Mac/bin/qreview-dual.mjs")
+FIXED_PORT="${DUALEND_BRIDGE_PORT:-57689}"
+LOCK="${REPO_ROOT}/系统数据/dual-end/runtime/daemon.lock"
+LOG="${REPO_ROOT}/系统数据/dual-end/logs/daemon-stdout.log"
+
+running_pid() {
+  [ -f "${LOCK}" ] || return 1
+  local p
+  p=$(python3 -c "import json;print(json.load(open('${LOCK}'))['pid'])" 2>/dev/null) || return 1
+  if [ -n "${p}" ] && kill -0 "${p}" 2>/dev/null; then echo "${p}"; return 0; fi
+  return 1
+}
+
+cleanup_orphans() {
+  # daemon 非正常退出时其 dns-sd 子进程会变孤儿继续广播旧端口（导致服务名冲突/死端口），
+  # 这里统一清理；仅在 start（daemon 未在运行）与 stop 之后调用，不会误杀在跑的广播。
+  if pgrep -f "dns-sd -R qiuzao-review-" >/dev/null 2>&1; then
+    pkill -f "dns-sd -R qiuzao-review-" 2>/dev/null && echo "已清理残留 Bonjour 广播进程"
+  fi
+  return 0
+}
+
+case "${1:-status}" in
+  start)
+    if P=$(running_pid); then
+      echo "daemon 已在运行 pid=${P}"
+      "${CLI[@]}" daemon status
+      exit 0
+    fi
+    cleanup_orphans
+    rm -f "${LOCK}"
+    mkdir -p "$(dirname "${LOG}")"
+    DUALEND_BRIDGE_PORT="${FIXED_PORT}" nohup "${CLI[@]}" daemon start >> "${LOG}" 2>&1 &
+    disown 2>/dev/null || true
+    echo "daemon 启动中 固定端口=${FIXED_PORT} 日志=${LOG}"
+    sleep 4
+    "${CLI[@]}" daemon status
+    ;;
+  stop)
+    if P=$(running_pid); then
+      kill -TERM "${P}" 2>/dev/null && echo "已发送 SIGTERM 优雅停止 pid=${P}"
+      sleep 2
+    fi
+    cleanup_orphans
+    rm -f "${LOCK}"
+    echo "daemon 已停止"
+    ;;
+  restart)
+    "$0" stop; sleep 1; "$0" start
+    ;;
+  status)
+    "${CLI[@]}" daemon status
+    ;;
+  *)
+    echo "用法: $0 {start|stop|restart|status}"; exit 1
+    ;;
+esac

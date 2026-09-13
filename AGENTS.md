@@ -1,6 +1,6 @@
 # AGENTS.md — 新 AI 接管指南（先读我）
 
-本仓库是一个**通过 AI 持续对话运行的学习工作区**（Agent-native）。你的职责是**运行**已构建完成的秋招智能学习与复习体系：不要重新设计学习核心；`DualEnd-Mac`/`DualEnd-iPad` 双端是本版本**明确要求并已交付**的伴生能力（iPad Reader App），不是额外产品化——日常学习时如需使用请先 `node DualEnd-Mac/bin/qreview-dual.mjs daemon start`，未启动也不阻断学习。协作细节见 RuntimePrompt `21_双端问题图与iPad协作协议.md`；双端启动/装机/排障见 `提示词规划/秋招智能学习与复习体系_启动Prompt_V1/`。
+本仓库是一个**通过 AI 持续对话运行的学习工作区**（Agent-native）。你的职责是**运行**已构建完成的秋招智能学习与复习体系：不要重新设计学习核心；`DualEnd-Mac`/`DualEnd-iPad` 双端是本版本**明确要求并已交付**的伴生能力（iPad Reader App），不是额外产品化——日常学习时如需使用请先 `./DualEnd-Mac/bin/daemon-fixed.sh start`（固定端口 57689，iPad 静态直连依赖），未启动也不阻断学习。协作细节见 RuntimePrompt `21_双端问题图与iPad协作协议.md`；双端启动/装机/排障见 `提示词规划/秋招智能学习与复习体系_启动Prompt_V1/`。
 
 ---
 
@@ -70,7 +70,7 @@ python3 学习系统/cli.py expand-materials  # 用户放入新资料后增量�
 
 若某资产缺失（如 `资料库/materials.sqlite3` 不在 git 内）：先运行 `expand-materials` 重建，**不要**重做系统架构。
 
-双端兜底：`node DualEnd-Mac/bin/qreview-dual.mjs daemon start|status`；iPad 构建/安装/离线播种/诊断钩子见 启动 Prompt_V1 `05_iPad端构建安装.md`。
+双端兜底：`./DualEnd-Mac/bin/daemon-fixed.sh start|stop|status`（固定端口 57689，勿用裸 `daemon start` 随机端口启动）；iPad 构建/安装/静态端点配置/离线播种/诊断钩子见 启动 Prompt_V1 `04`/`05` 号。
 
 ## 6. 绝对禁止
 

@@ -92,7 +92,7 @@ Goal Stack ──→ Temporal Scheduler ──→ 下一项 TaskIntent
 
 - `DualEnd-Mac/`：Node 守护进程。QuestionGraph canonical store（CENTER 正方 / EXPLANATION 圆 / TEMPORARY 三角）、localhost Agent CLI、Bonjour `_qiuzhaoreview._tcp` 广播、WebSocket v1、Snapshot/Patch 同步、Ink 备份。
 - `DualEnd-iPad/`：iPadOS App（Xcode 工程 `QiuZhaoReader.xcodeproj`）。问题图 Topology（拖动/改标题/删除）、Markdown 只读 Reader + Apple Pencil 批注（PencilKit，按 node_id 绑定）、离线 cache + outbox、零配对自动发现。
-- 启动：`node DualEnd-Mac/bin/qreview-dual.mjs daemon start`；Agent 协作契约见 RuntimePrompt `21_双端问题图与iPad协作协议.md`；验收与状态见 `双端Release验收清单.md`、`双端更新实施状态.md`。
+- 启动：`./DualEnd-Mac/bin/daemon-fixed.sh start`（**固定端口 57689**，iPad 端静态直连 `192.168.1.197:57689` 依赖它；勿用裸 `daemon start` 随机端口）；Agent 协作契约见 RuntimePrompt `21_双端问题图与iPad协作协议.md`；验收与状态见 `双端Release验收清单.md`、`双端更新实施状态.md`。
 - 2026-09-10：Reader 的 Apple Pencil **近屏实时渲染偏移**（双重视口基准分裂）与**双击节点卡死**（`@Published` 同值写入反馈死循环）双根因修复完成，真机验收通过——Reader 现为"PKCanvasView 唯一视口 owner"单一变换架构（`screen(P)=P·z−offset`），取证与交付见 `提示词规划/Pencil悬停预览修复实施_v3/`；测试基线 32/32。系统启动/装机/排障一体化指引见 `提示词规划/秋招智能学习与复习体系_启动Prompt_V1/`。
 
 ## 四、开始使用（日常对话）

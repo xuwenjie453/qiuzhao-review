@@ -16,7 +16,38 @@ xcrun devicectl device install app --device <设备ID> \
   DualEnd-iPad/build/DEVICE/Build/Products/Debug-iphoneos/QiuZhaoReader.app
 ```
 
-Bundle ID：`local.qiuzhaoreview.ipad2`。首启会出现"本地网络用途说明"页，点继续即触发 Bonjour 发现。
+Bundle ID：`local.qiuzhaoreview.ipad2`。首启会出现"本地网络用途说明"页，点继续即开始连接（**静态直连优先**，见下节；无候选时才走 Bonjour 发现）。
+
+## 静态端点直连（2026-09-13 起，默认开启）
+
+iPad 默认直连 `192.168.1.197:57689`（纯 IP:Port，**不碰 mDNS、不碰 DNS 解析**，免疫 VPN fake-ip 劫持）。双端网络身份与配套关系见 `04_双端Mac守护进程.md` 第一、三节。
+
+- **正常无需任何配置**：默认值内置于 `Connectivity/BonjourBrowser.swift` 的 `StaticEndpoint`；
+- **覆盖地址/端口**（Mac IP 或端口变化时，免重编译；先终止 app）：
+
+```bash
+DEV=AD98BAD8-7CB8-5EE3-AC86-8517E419613F   # 以 xcrun devicectl list devices 实测为准
+APP=local.qiuzhaoreview.ipad2
+# 1) 备份当前 Preferences
+xcrun devicectl device copy from --device "$DEV" \
+  --domain-type appDataContainer --domain-identifier "$APP" \
+  --source "Library/Preferences/$APP.plist" --destination /tmp/prefs.plist
+# 2) 修改（host / port 二选一或都改）
+plutil -replace "dualend.static.host" -string "192.168.1.197" /tmp/prefs.plist 2>/dev/null \
+  || plutil -insert "dualend.static.host" -string "192.168.1.197" /tmp/prefs.plist
+plutil -replace "dualend.static.port" -integer 57689 /tmp/prefs.plist 2>/dev/null \
+  || plutil -insert "dualend.static.port" -integer 57689 /tmp/prefs.plist
+# 3) 推回（覆盖整个域——步骤 1 的备份就是为防此事）
+xcrun devicectl device copy to --device "$DEV" \
+  --domain-type appDataContainer --domain-identifier "$APP" \
+  --source /tmp/prefs.plist --destination "Library/Preferences/$APP.plist"
+# 4) 重启 app 生效
+```
+
+- **关闭静态直连**（回退纯 Bonjour）：同上方式写 `dualend.static.disabled = true`；
+- **验证生效**：Debug 构建 `launch --console` 日志出现
+  `[diag] 静态端点直连: static://192.168.1.197:57689`，且**没有** `browse results` 行；
+- **逃生门**：静态连续失败 5 次后自动让 Bonjour 发现一轮（Mac IP 变化时仍能自愈），会话建立成功后计数复位。
 
 ## 模拟器（UI 冒烟用；**连不上 daemon**）
 

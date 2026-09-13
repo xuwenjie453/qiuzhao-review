@@ -28,6 +28,10 @@ final class SyncEngine: WebSocketTransportDelegate {
     private var activeTransportEpoch: UInt64?
     private var reconnectWorkItem: DispatchWorkItem?
     private var welcomeWatchdog: DispatchWorkItem?
+    /// v3.1 静态直连状态：当前 attempt 是否走的静态端点；连续失败计数用于逃生门。
+    private var attemptUsesStatic = false
+    private var staticFailures = 0
+    private let staticFailoverThreshold = 5
 
     var onEvent: ((SyncEvent) -> Void)?
 
@@ -69,20 +73,44 @@ final class SyncEngine: WebSocketTransportDelegate {
         onEvent?(.phaseChanged(.cachedOffline))
     }
 
-    // MARK: 连接(自动发现 + 自动选择 + 重连退避 0.5/1/2/4/8→10s)
+    // MARK: 连接(静态直连优先 + Bonjour 兜底 + 重连退避 0.5/1/2/4/8→10s)
     private func connect() {
         guard !stopFlag else { return }
         guard ws == nil else { return }
-        guard let picked = browser.preferredEndpoint() else {
-            scheduleReconnect()
+
+        // v3.1 静态端点优先：直连 IP:Port，不碰 mDNS/DNS（免受 VPN fake-ip 劫持）。
+        // 连续失败超过阈值后让 Bonjour 发现一轮（IP 变化的逃生门）；Bonjour 无候选时回退静态。
+        if staticFailures < staticFailoverThreshold, let s = StaticEndpoint.resolve() {
+            print("[diag] 静态端点直连:", s.name)
+            startAttempt(name: s.name,
+                         endpoint: .hostPort(host: NWEndpoint.Host(s.host),
+                                             port: NWEndpoint.Port(rawValue: s.port)!),
+                         usesStatic: true)
             return
         }
-        print("[diag] 选中服务:", picked.name)
-        preferredId = picked.name
-        Task { await store.rememberDaemon(picked.name) }
+        if let picked = browser.preferredEndpoint() {
+            print("[diag] 选中服务:", picked.name)
+            startAttempt(name: picked.name, endpoint: picked.endpoint, usesStatic: false)
+            return
+        }
+        if let s = StaticEndpoint.resolve() {   // Bonjour 无候选 → 回退静态
+            print("[diag] Bonjour 无候选, 回退静态端点:", s.name)
+            startAttempt(name: s.name,
+                         endpoint: .hostPort(host: NWEndpoint.Host(s.host),
+                                             port: NWEndpoint.Port(rawValue: s.port)!),
+                         usesStatic: true)
+            return
+        }
+        scheduleReconnect()
+    }
+
+    private func startAttempt(name: String, endpoint: NWEndpoint, usesStatic: Bool) {
+        attemptUsesStatic = usesStatic
+        preferredId = name
+        Task { await store.rememberDaemon(name) }
         phase = .connecting
         onEvent?(.phaseChanged(.connecting))
-        let t = WebSocketTransport(endpoint: picked.endpoint)
+        let t = WebSocketTransport(endpoint: endpoint)
         t.delegate = self
         ws = t
         activeTransportEpoch = networkEpoch
@@ -152,6 +180,7 @@ final class SyncEngine: WebSocketTransportDelegate {
 
     private func onSocketClosed() {
         print("[diag] ws closed")
+        if attemptUsesStatic { staticFailures += 1 }   // 静态失败计数（逃生门）
         ws = nil
         activeTransportEpoch = nil
         sessionEpoch = nil
@@ -194,6 +223,7 @@ final class SyncEngine: WebSocketTransportDelegate {
         welcomeWatchdog?.cancel(); welcomeWatchdog = nil
         if let epoch = m.payload["session_epoch"]?.string { sessionEpoch = epoch }
         reconnectAttempt = 0
+        staticFailures = 0   // 会话建立成功 → 静态直连健康, 复位逃生门计数
         Task {
             await store.rememberDaemon(daemonId)
             if let active = m.payload["active"]?.dict,
