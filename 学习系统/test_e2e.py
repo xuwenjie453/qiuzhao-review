@@ -120,6 +120,13 @@ def main():
                                           evidence={'had_failure': True, 'verified': True},
                                           allowed_probe_types=['Boundary', 'SkeletonFill'], response_budget='small_code')
     check('Algorithms LEARNING_VERIFIED + Capsule', bool(cap3))
+    review_engine.grade_review(cap3, 'Algorithms', 'partial')
+    review_engine.record_repair_success('Algorithms', 'Algorithms/Skeleton/AlgorithmPatterns', capsule_id=cap3)
+    aconn = db.connect(db.ENGINE_DBS['Algorithms'])
+    alg_types = [e['event_type'] for e in aconn.execute(
+        "SELECT event_type FROM learning_events WHERE target_id='Algorithms/Skeleton/AlgorithmPatterns'").fetchall()]
+    aconn.close()
+    check('Algorithms Review Partial 后可记录 REPAIR_SUCCESS', 'REVIEW_PARTIAL' in alg_types and 'REPAIR_SUCCESS' in alg_types)
 
     print('\n== 10) Projects E2E: PSB → 验证 → Capsule ==')
     engines.add_event('Projects', 'Projects/ProjectGeneral', 'CASE_ATTEMPT', result='failure')

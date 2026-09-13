@@ -34,8 +34,9 @@ node DualEnd-Mac/bin/qreview-dual.mjs question open --json /tmp/open.json
 #   "question_body_markdown": "<题干原文 Markdown>",
 #   "ai_title": "<4-18字>"
 # }
-# REVIEW 来源:
-#   "question_ref": {"source": "REVIEW_CAPSULE", "question_key": "capsule:<capsule_id>:<probe_key>", "source_id": "<capsule_id>", "probe_key": "<probe_key>"}
+# REVIEW 来源：同一 capsule 无论本次 Probe 如何措辞，都复用同一张问题图。
+#   "question_ref": {"source": "REVIEW_CAPSULE", "question_key": "capsule:<capsule_id>", "source_id": "<capsule_id>", "probe_key": "<probe_key>"}
+# probe_key 仅描述本轮 retrieval probe，不参与 QuestionGraph 身份；CENTER 保留首次开题正文快照。
 
 # 把用户明确选中的解释加入
 node DualEnd-Mac/bin/qreview-dual.mjs graph add-node --json /tmp/add.json

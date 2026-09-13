@@ -20,6 +20,16 @@ function open() {
     ai_title: 'Redis过期删除策略',
   });
 }
+function openReview(probeKey, body = '请解释 RAG 的离线与在线流程。') {
+  return svc.open({
+    command_id: crypto.randomUUID(), question_ref: {
+      source: 'REVIEW_CAPSULE', question_key: `capsule:cap-rag:${probeKey}`,
+      source_id: 'cap-rag', probe_key: probeKey,
+    },
+    question_body_markdown: body,
+    ai_title: 'RAG复习探针',
+  });
+}
 const uid = () => crypto.randomUUID();
 
 /** 确保存在一个 ACTIVE round 并返回(必要时 open 新一轮)。 */
@@ -60,6 +70,16 @@ describe('graph identity & open', () => {
     assert.notEqual(r1.round_id, r2.round_id); // 第二次 open: 前 round 被 INTERRUPTED
     const g = store.prepare("SELECT * FROM rounds WHERE round_id=?").get(r1.round_id);
     assert.equal(g.status, 'INTERRUPTED');
+  });
+  test('同一 Review Capsule 的不同 probe_key 复用同一内容图', () => {
+    const r1 = openReview('explain');
+    const r2 = openReview('boundary', 'RAG 幻觉如何分层防控？');
+    assert.equal(r1.graph_id, r2.graph_id);
+    assert.equal(r2.created, false);
+    const graph = store.prepare('SELECT * FROM graphs WHERE graph_id=?').get(r1.graph_id);
+    assert.equal(graph.question_key, 'capsule:cap-rag');
+    const center = store.prepare('SELECT body_markdown FROM nodes WHERE node_id=?').get(graph.center_node_id);
+    assert.equal(center.body_markdown, '请解释 RAG 的离线与在线流程。');
   });
   test('snapshot 必含 CENTER; center layout 0.5,0.5', () => {
     const g = store.prepare('SELECT * FROM graphs').get();

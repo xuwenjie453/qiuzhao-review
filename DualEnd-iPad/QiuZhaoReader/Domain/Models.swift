@@ -6,7 +6,7 @@ enum QuestionSource: String, Codable {
     case REVIEW_CAPSULE
 }
 
-/// question_key: "qb:<question_id>" 或 "capsule:<capsule_id>:<probe_key>"；graph_id = 稳定派生。
+/// question_key: "qb:<question_id>" 或 "capsule:<capsule_id>"；Review 的 probe_key 仅描述本轮问法，不参与图身份。
 struct QuestionRef: Codable, Equatable {
     let source: QuestionSource
     let questionKey: String
@@ -17,7 +17,7 @@ struct QuestionRef: Codable, Equatable {
         QuestionRef(source: .QUESTION_BANK, questionKey: "qb:\(id)", sourceId: id, probeKey: nil)
     }
     static func capsule(_ capsuleId: String, probeKey: String) -> QuestionRef {
-        QuestionRef(source: .REVIEW_CAPSULE, questionKey: "capsule:\(capsuleId):\(probeKey)",
+        QuestionRef(source: .REVIEW_CAPSULE, questionKey: "capsule:\(capsuleId)",
                     sourceId: capsuleId, probeKey: probeKey)
     }
 }
