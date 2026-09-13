@@ -72,6 +72,7 @@ export class QuestionGraphService {
       const dup = this.store.dedupGet(command_id); if (dup) return dup;
       const child = this.graphGet(child_graph_id), parent = this.graphGet(parent_graph_id);
       assert(child && parent, ERR.GRAPH_NOT_FOUND, 'graph 不存在');
+      assert(child.question_source === 'REVIEW_CAPSULE' && parent.question_source === 'QUESTION_BANK', ERR.VALIDATION, '继承仅允许 Review → QuestionBank');
       assert(child_graph_id !== parent_graph_id, ERR.VALIDATION, '禁止自继承');
       // reject cycles before insert
       assert(!this.descendantGraphIds(child_graph_id).includes(parent_graph_id), ERR.VALIDATION, '继承关系会形成环');
@@ -171,6 +172,7 @@ export class QuestionGraphService {
       if (inherit_from && g.question_source === 'REVIEW_CAPSULE') {
         const parent = this.graphByQuestionRef(inherit_from);
         if (parent) {
+          assert(inherit_from.source === 'QUESTION_BANK' && parent.question_source === 'QUESTION_BANK', ERR.VALIDATION, '继承 parent 必须为 QUESTION_BANK');
           const existingInheritance = this.store.prepare('SELECT 1 FROM graph_inheritance WHERE child_graph_id=? AND parent_graph_id=?').get(g.graph_id, parent.graph_id);
           assert(existingInheritance || !this.descendantGraphIds(g.graph_id).includes(parent.graph_id), ERR.VALIDATION, '继承关系会形成环');
           const ins = this.store.prepare(`INSERT OR IGNORE INTO graph_inheritance(child_graph_id,parent_graph_id,inheritance_kind,created_at)
