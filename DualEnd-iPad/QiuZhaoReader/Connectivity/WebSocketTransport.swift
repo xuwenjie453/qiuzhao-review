@@ -17,6 +17,9 @@ final class WebSocketTransport {
     private let endpoint: NWEndpoint
     private var rxBuffer = Data()
     private var opened = false
+    private var finished = false
+    private var tcpWatchdog: DispatchWorkItem?
+    private var upgradeWatchdog: DispatchWorkItem?
 
     init(endpoint: NWEndpoint) { self.endpoint = endpoint }
 
@@ -24,6 +27,8 @@ final class WebSocketTransport {
 
     func connect() {
         guard conn == nil else { return }
+        finished = false
+        scheduleTCPWatchdog()
         let params = NWParameters.tcp
         params.requiredInterfaceType = .wifi   // 只走 Wi-Fi: 避开 awdl/虚拟网卡干扰
         params.prohibitedInterfaceTypes = [.cellular]
@@ -35,13 +40,17 @@ final class WebSocketTransport {
             switch state {
             case .ready:
                 print("[diag] tcp ready (service resolved)")
+                self.tcpWatchdog?.cancel()
+                self.scheduleUpgradeWatchdog()
                 self.sendUpgrade()
             case .failed(let err):
                 print("[diag] tcp failed:", err)
-                self.delegate?.transportFailed(self, error: err)
-                self.teardown()
+                self.finish(error: err)
             case .cancelled:
-                break
+                if !self.finished {
+                    self.finish(error: NSError(domain: "WebSocketTransport", code: -2,
+                                               userInfo: [NSLocalizedDescriptionKey: "connection cancelled"]))
+                }
             default: break
             }
         }
@@ -78,10 +87,10 @@ final class WebSocketTransport {
                 self.processBuffer()
             }
             if isComplete || error != nil {
-                self.close()
+                self.finish(error: error)
                 return
             }
-            if self.opened { self.receiveLoop() }
+            if self.conn != nil && !self.finished { self.receiveLoop() }
         }
     }
 
@@ -89,15 +98,20 @@ final class WebSocketTransport {
         while rxBuffer.count > 0 {
             if !opened {
                 guard let range = rxBuffer.range(of: Data("\r\n\r\n".utf8)) else {
-                    if rxBuffer.count > 4096 { self.close() }
+                    if rxBuffer.count > 4096 {
+                        self.finish(error: NSError(domain: "WebSocketTransport", code: -4,
+                                                   userInfo: [NSLocalizedDescriptionKey: "HTTP headers too large"]))
+                    }
                     return
                 }
                 let head = String(data: rxBuffer[..<range.lowerBound], encoding: .utf8) ?? ""
                 guard head.contains("101") else {
                     print("[diag] upgrade 失败:", head.split(separator: "\r\n").first ?? "")
-                    self.close()
+                    self.finish(error: NSError(domain: "WebSocketTransport", code: -3,
+                                               userInfo: [NSLocalizedDescriptionKey: "HTTP Upgrade rejected"]))
                     return
                 }
+                upgradeWatchdog?.cancel()
                 opened = true
                 rxBuffer.removeSubrange(..<range.upperBound)   // 清掉握手头
                 print("[diag] ws upgrade ok")
@@ -164,6 +178,7 @@ final class WebSocketTransport {
         conn?.send(content: data, completion: .contentProcessed { error in
             if let error {
                 print("[diag] send 失败:", error)
+                self.finish(error: error)
             } else {
                 print("[diag] send 成功", data.count, "字节")
             }
@@ -171,16 +186,43 @@ final class WebSocketTransport {
     }
 
     func close() {
-        guard conn != nil else { return }
+        guard !finished else { return }
         if opened { sendFrame(opcode: 0x8, payload: Data()) }
-        teardown()
-        delegate?.transportClosed(self)
+        finish(error: nil)
     }
 
-    private func teardown() {
+    private func finish(error: Error?) {
+        guard !finished else { return }
+        finished = true
+        tcpWatchdog?.cancel(); tcpWatchdog = nil
+        upgradeWatchdog?.cancel(); upgradeWatchdog = nil
         conn?.cancel()
         conn = nil
         opened = false
         rxBuffer.removeAll()
+        if let error { delegate?.transportFailed(self, error: error) }
+        else { delegate?.transportClosed(self) }
+    }
+
+    private func scheduleTCPWatchdog() {
+        tcpWatchdog?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.finished, !self.opened else { return }
+            self.finish(error: NSError(domain: "WebSocketTransport", code: -10,
+                                       userInfo: [NSLocalizedDescriptionKey: "TCP connect timeout"]))
+        }
+        tcpWatchdog = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: item)
+    }
+
+    private func scheduleUpgradeWatchdog() {
+        upgradeWatchdog?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.finished, !self.opened else { return }
+            self.finish(error: NSError(domain: "WebSocketTransport", code: -11,
+                                       userInfo: [NSLocalizedDescriptionKey: "HTTP Upgrade timeout"]))
+        }
+        upgradeWatchdog = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: item)
     }
 }

@@ -6,12 +6,16 @@ import UIKit
 @main
 struct QiuZhaoReaderApp: App {
     @StateObject private var model = AppSessionModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(model)
                 .onAppear { model.bootstrap() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            model.scenePhaseChanged(phase)
         }
     }
 }
@@ -111,6 +115,19 @@ final class AppSessionModel: ObservableObject {
         showPermissionExplanation = false
         browser.start()
         sync.start()
+    }
+
+    func scenePhaseChanged(_ phase: ScenePhase) {
+        guard store != nil else { return }
+        switch phase {
+        case .active:
+            sync.startNewNetworkEpoch(reason: "foreground")
+        case .inactive, .background:
+            // 停止短生命周期网络资源，但保留 ClientStore/cache/outbox。
+            sync.stop()
+        @unknown default:
+            break
+        }
     }
 
     func openSettings() {

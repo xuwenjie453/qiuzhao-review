@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const MAX_FRAME_BYTES = 22 * 1024 * 1024;
+const MAX_MESSAGE_BYTES = 22 * 1024 * 1024;
 
 export class WsServer extends EventEmitter {
   constructor({ httpServer, path = '/bridge', logger }) {
@@ -58,6 +60,7 @@ export class WsConnection extends EventEmitter {
     this.buffer = Buffer.alloc(0);
     this.open = true;
     this.fragments = null;
+    this.fragmentBytes = 0;
     this.missedPings = 0;
 
     socket.on('data', (d) => this.feed(d));
@@ -88,7 +91,13 @@ export class WsConnection extends EventEmitter {
   }
 
   feed(data) {
+    if (!this.open) return;
     this.buffer = Buffer.concat([this.buffer, data]);
+    if (this.buffer.length > MAX_FRAME_BYTES + 16) {
+      this.log?.warn?.('websocket input exceeds limit');
+      this.close();
+      return;
+    }
     while (true) {
       const frame = this.tryReadFrame();
       if (!frame) break;
@@ -102,6 +111,8 @@ export class WsConnection extends EventEmitter {
     const fin = (buf[0] & 0x80) !== 0;
     const opcode = buf[0] & 0x0f;
     const masked = (buf[1] & 0x80) !== 0;
+    // RFC6455: client-to-server frames must be masked.
+    if (!masked) { this.close(); return null; }
     let len = buf[1] & 0x7f;
     let offset = 2;
     if (len === 126) {
@@ -112,6 +123,11 @@ export class WsConnection extends EventEmitter {
       if (buf.length < 10) return null;
       len = Number(buf.readBigUInt64BE(2));
       offset = 10;
+    }
+    if (!Number.isSafeInteger(len) || len > MAX_FRAME_BYTES) {
+      this.log?.warn?.('websocket frame exceeds limit');
+      this.close();
+      return null;
     }
     let mask = null;
     if (masked) {
@@ -136,18 +152,22 @@ export class WsConnection extends EventEmitter {
         break;
       case 0x0: // continuation
         if (this.fragments) {
+          this.fragmentBytes += payload.length;
+          if (this.fragmentBytes > MAX_MESSAGE_BYTES) { this.close(); return; }
           this.fragments.push(payload);
           if (fin) {
             const full = Buffer.concat(this.fragments);
             this.fragments = null;
+            this.fragmentBytes = 0;
             this.emit('message', full.toString('utf8'));
           }
         }
         break;
       case 0x1: // text
       case 0x2: // binary
+        if (payload.length > MAX_MESSAGE_BYTES) { this.close(); return; }
         if (fin) this.emit('message', payload.toString('utf8'));
-        else this.fragments = [payload];
+        else { this.fragments = [payload]; this.fragmentBytes = payload.length; }
         break;
       case 0x8: // close
         this.sendFrame(0x8, payload.slice(0, 2));

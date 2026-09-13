@@ -54,10 +54,10 @@ describe('store 基础', () => {
     assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '1');
   });
   test('server_seq 单调且 message_id 唯一', () => {
-    const s1 = store.journal('msg-a', 'TEST', null, { a: 1 });
-    const s2 = store.journal('msg-b', 'TEST', null, { a: 2 });
+    const s1 = store.journalUnique('msg-a', 'TEST', null, { a: 1 }).serverSeq;
+    const s2 = store.journalUnique('msg-b', 'TEST', null, { a: 2 }).serverSeq;
     assert.ok(s2 > s1);
-    assert.throws(() => store.journal('msg-a', 'TEST', null, {}));
+    assert.throws(() => store.journalUnique('msg-a', 'TEST', null, {}));
   });
 });
 
