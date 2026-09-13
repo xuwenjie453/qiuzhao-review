@@ -1,5 +1,5 @@
 // Wire Protocol v1 —— Envelope 构造/解析/校验 + 类型常量 (M-2.1 ~ M-2.7)
-import { nowIso, uuid, PROTOCOL_VERSION } from '../util.mjs';
+import { nowIso, uuid, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS } from '../util.mjs';
 
 export const MSG = {
   // Server → Client
@@ -22,9 +22,9 @@ export const MSG = {
 
 const TYPES = new Set(Object.values(MSG));
 
-export function makeEnvelope(type, payload, { messageId, sessionEpoch } = {}) {
+export function makeEnvelope(type, payload, { messageId, sessionEpoch, version = PROTOCOL_VERSION } = {}) {
   return {
-    v: PROTOCOL_VERSION,
+    v: version,
     message_id: messageId ?? uuid(),
     type,
     session_epoch: sessionEpoch ?? null,
@@ -42,7 +42,7 @@ export function parseEnvelope(raw) {
     return { ok: false, code: 'JSON_PARSE_ERROR' };
   }
   if (!obj || typeof obj !== 'object') return { ok: false, code: 'NOT_OBJECT' };
-  if (obj.v !== PROTOCOL_VERSION) return { ok: false, code: 'PROTOCOL_UNSUPPORTED', version: obj.v };
+  if (!SUPPORTED_PROTOCOLS.includes(obj.v)) return { ok: false, code: 'PROTOCOL_UNSUPPORTED', version: obj.v };
   if (!TYPES.has(obj.type)) return { ok: false, code: 'UNKNOWN_TYPE', type: obj.type };
   if (typeof obj.message_id !== 'string' || !obj.message_id) return { ok: false, code: 'MISSING_MESSAGE_ID' };
   if (!obj.payload || typeof obj.payload !== 'object') return { ok: false, code: 'MISSING_PAYLOAD' };

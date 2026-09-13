@@ -1,0 +1,9 @@
+{
+  "v": 2,
+  "message_id": "fixture-shared-rename",
+  "type": "GRAPH_PATCH",
+  "session_epoch": "epoch",
+  "sent_at": "2026-09-14T00:00:00+08:00",
+  "payload": {"graph_id": "review-graph", "base_revision": 13, "target_revision": 14,
+    "ops": [{"op": "UPDATE_TITLE", "node_id": "E1", "title": "Shared renamed", "node_revision": 5}]}
+}

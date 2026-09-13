@@ -170,7 +170,7 @@ final class SyncEngine: WebSocketTransportDelegate {
             let payload: [String: Any] = [
                 "device_id": Self.deviceId(),
                 "client_build": WireV1.clientBuild,
-                "supported_protocols": [1],
+                "supported_protocols": WireV1.supportedVersions,
                 "last_server_seq": 0,
                 "cached_graph": cached.snapshot.map { ["graph_id": $0.graphId, "revision": $0.revision] } ?? [:],
             ]

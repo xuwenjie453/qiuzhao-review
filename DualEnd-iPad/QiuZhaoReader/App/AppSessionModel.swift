@@ -371,6 +371,7 @@ struct NodeManageSheet: View {
     let onDelete: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var title: String = ""
+    @State private var showDeleteWarning = false
 
     var body: some View {
         NavigationStack {
@@ -390,7 +391,7 @@ struct NodeManageSheet: View {
                 }
                 if !node.isCenter {
                     Section {
-                        Button("删除节点", role: .destructive) { onDelete(); dismiss() }
+                        Button("删除节点", role: .destructive) { showDeleteWarning = true }
                     }
                 }
             }
@@ -409,6 +410,14 @@ struct NodeManageSheet: View {
             }
         }
         .presentationDetents([.medium])
+        .alert(node.visibility == .INHERITED ? "删除共享解释？" : "删除节点？", isPresented: $showDeleteWarning) {
+            Button("取消", role: .cancel) { }
+            Button("确认删除", role: .destructive) { onDelete(); dismiss() }
+        } message: {
+            Text(node.visibility == .INHERITED
+                 ? "这是共享解释节点。删除会同时影响原题图以及所有继承该解释的问题图。"
+                 : "删除后该节点将从当前问题图中移除。")
+        }
     }
     private var kindName: String {
         switch node.kind {

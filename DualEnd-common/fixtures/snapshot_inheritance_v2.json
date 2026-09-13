@@ -1,0 +1,19 @@
+{
+  "v": 2,
+  "message_id": "fixture-inherited-snapshot",
+  "type": "GRAPH_SNAPSHOT",
+  "session_epoch": "epoch",
+  "sent_at": "2026-09-14T00:00:00+08:00",
+  "payload": {
+    "graph_id": "review-graph",
+    "question_key": "capsule:cap-1",
+    "round_id": "round-1",
+    "revision": 13,
+    "center_node_id": "CENTER_A",
+    "parent_graphs": [{"graph_id": "question-graph", "inheritance_kind": "SHARED_EXPLANATIONS"}],
+    "nodes": [
+      {"node_id": "CENTER_A", "owner_graph_id": "review-graph", "visibility": "OWN", "kind": "CENTER", "title": "Review", "body_markdown": "probe", "node_revision": 1, "layout": {"x": 0.5, "y": 0.5, "revision": 1}},
+      {"node_id": "E1", "owner_graph_id": "question-graph", "visibility": "INHERITED", "kind": "EXPLANATION", "title": "Shared", "body_markdown": "...", "node_revision": 4, "layout": {"x": 0.2, "y": 0.3, "revision": 5}}
+    ]
+  }
+}

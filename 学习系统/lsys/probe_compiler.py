@@ -24,21 +24,22 @@ def worth_long_term(learned: dict) -> tuple[bool, str]:
 def compile_capsule(engine: str, target_id: str, must_retrieve: list, evidence: dict,
                     allowed_probe_types: list, response_budget: str,
                     known_failure_modes: list | None = None, required_context: dict | None = None,
-                    source_questions: list | None = None, status: str = 'REVIEW_ELIGIBLE') -> str:
+                    source_questions: list | None = None, primary_source_question_id: str | None = None,
+                    status: str = 'REVIEW_ELIGIBLE') -> str:
     path = db.ENGINE_DBS[engine]
-    conn = db.connect(path)
+    conn = db.connect(path, init=True)
     try:
         capsule_id = db.uid('cap')
         now = db.now()
         conn.execute("""INSERT INTO review_capsules(capsule_id,target_id,engine_type,must_retrieve,known_failure_modes,
-                        allowed_probe_types,required_context,response_budget,source_questions,eligibility_evidence,
-                        compiler_version,status,created_at,updated_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        allowed_probe_types,required_context,response_budget,source_questions,primary_source_question_id,
+                        eligibility_evidence,compiler_version,status,created_at,updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (capsule_id, target_id, engine, json.dumps(must_retrieve, ensure_ascii=False),
                       json.dumps(known_failure_modes or [], ensure_ascii=False),
                       json.dumps(allowed_probe_types, ensure_ascii=False),
                       json.dumps(required_context or {}, ensure_ascii=False),
-                      response_budget, json.dumps(source_questions or [], ensure_ascii=False),
+                      response_budget, json.dumps(source_questions or [], ensure_ascii=False), primary_source_question_id,
                       json.dumps(evidence, ensure_ascii=False), COMPILER_VERSION, status, now, now))
         conn.commit()
         # 在 scheduler 激活最小 schedule 状态(绝不写 questions.sqlite3)

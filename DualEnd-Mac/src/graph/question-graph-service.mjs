@@ -47,13 +47,63 @@ export class QuestionGraphService {
     return this.store.prepare('SELECT * FROM nodes WHERE node_id=?').get(nodeId);
   }
 
+  parentGraphs(graphId) {
+    return this.store.prepare(`SELECT g.* FROM graph_inheritance i JOIN graphs g ON g.graph_id=i.parent_graph_id
+      WHERE i.child_graph_id=? ORDER BY g.graph_id`).all(graphId);
+  }
+
+  descendantGraphIds(graphId) {
+    const rows = this.store.prepare(`WITH RECURSIVE d(graph_id) AS (
+      SELECT child_graph_id FROM graph_inheritance WHERE parent_graph_id=?
+      UNION
+      SELECT i.child_graph_id FROM graph_inheritance i JOIN d ON i.parent_graph_id=d.graph_id
+    ) SELECT graph_id FROM d ORDER BY graph_id`).all(graphId);
+    return [graphId, ...rows.map((r) => r.graph_id)];
+  }
+
+  affectedGraphIds(nodeId) {
+    const n = this.nodeGet(nodeId);
+    return n ? this.descendantGraphIds(n.graph_id) : [];
+  }
+
+  setInheritance({ command_id, child_graph_id, parent_graph_id, inheritance_kind = 'SHARED_EXPLANATIONS' }) {
+    assert(inheritance_kind === 'SHARED_EXPLANATIONS', ERR.VALIDATION, 'inheritance_kind 非法');
+    return this.store.withTx(() => {
+      const dup = this.store.dedupGet(command_id); if (dup) return dup;
+      const child = this.graphGet(child_graph_id), parent = this.graphGet(parent_graph_id);
+      assert(child && parent, ERR.GRAPH_NOT_FOUND, 'graph 不存在');
+      assert(child_graph_id !== parent_graph_id, ERR.VALIDATION, '禁止自继承');
+      // reject cycles before insert
+      assert(!this.descendantGraphIds(child_graph_id).includes(parent_graph_id), ERR.VALIDATION, '继承关系会形成环');
+      const now = nowIso();
+      const ins = this.store.prepare(`INSERT OR IGNORE INTO graph_inheritance(child_graph_id,parent_graph_id,inheritance_kind,created_at)
+        VALUES (?,?,?,?)`).run(child_graph_id, parent_graph_id, inheritance_kind, now);
+      const affected = this.descendantGraphIds(child_graph_id);
+      if (Number(ins.changes) === 1) for (const gid of affected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1,updated_at=? WHERE graph_id=?').run(now, gid);
+      const g = this.graphGet(child_graph_id);
+      const result = { child_graph_id, parent_graph_id, graph_id: child_graph_id, affected_graph_ids: affected, graph_revision: g.graph_revision, inherited: true };
+      this.store.dedupPut(command_id, result); return result;
+    });
+  }
+
   /** 可见节点: 未删除且未过期。TEMPORARY 只显示当前 round 的。 */
   visibleNodes(graphId, roundId) {
-    const rows = this.store.prepare(`SELECT n.*, l.x_norm, l.y_norm, l.layout_revision, l.pinned_by_user
-       FROM nodes n LEFT JOIN layouts l ON l.node_id = n.node_id
-       WHERE n.graph_id=? AND n.deleted_at IS NULL
-         AND (n.expired_at IS NULL OR (n.kind='TEMPORARY' AND n.round_id=?))
-       ORDER BY n.created_at`).all(graphId, roundId ?? null);
+    const rows = this.store.prepare(`WITH RECURSIVE ancestors(graph_id) AS (
+       SELECT ? UNION SELECT i.parent_graph_id FROM graph_inheritance i JOIN ancestors a ON i.child_graph_id=a.graph_id
+     ), candidates AS (
+       SELECT n.*, 0 AS inherited FROM nodes n WHERE n.graph_id=?
+       UNION ALL
+       SELECT n.*, 1 AS inherited FROM nodes n JOIN ancestors a ON a.graph_id=n.graph_id
+         WHERE n.graph_id<>? AND n.kind='EXPLANATION'
+     )
+     SELECT c.*, l.x_norm, l.y_norm, l.layout_revision, l.pinned_by_user,
+       CASE WHEN c.inherited=1 THEN 'INHERITED' ELSE 'OWN' END AS visibility,
+       c.graph_id AS owner_graph_id
+       FROM candidates c LEFT JOIN layouts l ON l.node_id=c.node_id
+       WHERE c.deleted_at IS NULL
+         AND (c.expired_at IS NULL OR (c.kind='TEMPORARY' AND c.round_id=?))
+       GROUP BY c.node_id
+       ORDER BY c.created_at, c.node_id`).all(graphId, graphId, graphId, roundId ?? null);
     return rows;
   }
 
@@ -61,7 +111,8 @@ export class QuestionGraphService {
     const g = this.graphGet(graphId);
     if (!g) return null;
     const nodes = this.visibleNodes(graphId, roundId).map((n) => ({
-      node_id: n.node_id, kind: n.kind, title: n.title,
+      node_id: n.node_id, owner_graph_id: n.owner_graph_id, visibility: n.visibility,
+      kind: n.kind, title: n.title,
       body_markdown: n.body_markdown, node_revision: n.node_revision,
       layout: { x: n.x_norm ?? 0.5, y: n.y_norm ?? 0.5, revision: n.layout_revision ?? 1 },
     }));
@@ -71,13 +122,14 @@ export class QuestionGraphService {
       round_id: roundId ?? null,
       revision: g.graph_revision,
       center_node_id: g.center_node_id,
+      parent_graphs: this.parentGraphs(graphId).map((p) => ({ graph_id: p.graph_id, inheritance_kind: p.inheritance_kind })),
       nodes,
     };
   }
 
   // ============ Commands ============
   /** question.open: ensure graph + 新 round。全局同时仅一个 ACTIVE round。 */
-  open({ command_id, actor = 'AGENT', question_ref, question_body_markdown, ai_title, agent_session_ref }) {
+  open({ command_id, actor = 'AGENT', question_ref, question_body_markdown, ai_title, agent_session_ref, inherit_from }) {
     assert(question_ref && ['QUESTION_BANK', 'REVIEW_CAPSULE'].includes(question_ref.source), ERR.VALIDATION, 'question_ref.source 非法');
     assert(question_ref.question_key && typeof question_ref.question_key === 'string', ERR.VALIDATION, '缺少 question_key');
     if (question_ref.source === 'REVIEW_CAPSULE') {
@@ -114,9 +166,26 @@ export class QuestionGraphService {
       const roundId = uuid();
       this.store.prepare("INSERT INTO rounds(round_id,graph_id,status,opened_at) VALUES (?,?,?,?)")
         .run(roundId, g.graph_id, 'ACTIVE', now);
+      let parentGraphMissing = false;
+      let inheritanceAffected = [g.graph_id];
+      if (inherit_from && g.question_source === 'REVIEW_CAPSULE') {
+        const parent = this.graphByQuestionRef(inherit_from);
+        if (parent) {
+          const existingInheritance = this.store.prepare('SELECT 1 FROM graph_inheritance WHERE child_graph_id=? AND parent_graph_id=?').get(g.graph_id, parent.graph_id);
+          assert(existingInheritance || !this.descendantGraphIds(g.graph_id).includes(parent.graph_id), ERR.VALIDATION, '继承关系会形成环');
+          const ins = this.store.prepare(`INSERT OR IGNORE INTO graph_inheritance(child_graph_id,parent_graph_id,inheritance_kind,created_at)
+            VALUES (?,?, 'SHARED_EXPLANATIONS', ?)`)
+            .run(g.graph_id, parent.graph_id, now);
+          if (Number(ins.changes) === 1) {
+            inheritanceAffected = this.descendantGraphIds(g.graph_id);
+            for (const gid of inheritanceAffected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1,updated_at=? WHERE graph_id=?').run(now, gid);
+            g = this.graphGet(g.graph_id);
+          }
+        } else parentGraphMissing = true;
+      }
       this.store.prepare('UPDATE graphs SET updated_at=? WHERE graph_id=?').run(now, g.graph_id);
-      const result = { graph_id: g.graph_id, round_id: roundId, graph_revision: g.graph_revision,
-                       center_node_id: g.center_node_id, created: !existed };
+      const result = { graph_id: g.graph_id, affected_graph_ids: inheritanceAffected, round_id: roundId, graph_revision: g.graph_revision,
+                       center_node_id: g.center_node_id, created: !existed, parent_graph_missing: parentGraphMissing };
       this.store.dedupPut(command_id, result);
       return result;
     });
@@ -166,8 +235,10 @@ export class QuestionGraphService {
       const g = this.graphGet(round.graph_id);
       this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?')
         .run(now, g.graph_id);
-      const result = { graph_id: round.graph_id, round_id: round.round_id, node_id: nodeId, kind,
-                       graph_revision: g.graph_revision + 1, node_revision: 1,
+      const affected = this.descendantGraphIds(round.graph_id);
+      for (const gid of affected.slice(1)) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
+      const result = { graph_id: round.graph_id, affected_graph_ids: affected, round_id: round.round_id, node_id: nodeId, kind,
+                       graph_revision: g.graph_revision + 1, graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])), node_revision: 1,
                        layout: { x, y, revision: 1 } };
       this.store.dedupPut(command_id, result);
       return result;
@@ -186,11 +257,11 @@ export class QuestionGraphService {
       const now = nowIso();
       this.store.prepare('UPDATE nodes SET title=?, node_revision=node_revision+1 WHERE node_id=?')
         .run(String(title).trim(), node_id);
-      this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?')
-        .run(now, n.graph_id);
-      const g = this.graphGet(n.graph_id);
-      const result = { graph_id: n.graph_id, node_id, title: String(title).trim(),
-                       node_revision: n.node_revision + 1, graph_revision: g.graph_revision };
+      const affected = this.descendantGraphIds(n.graph_id);
+      for (const gid of affected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
+      const result = { graph_id: n.graph_id, affected_graph_ids: affected, node_id, title: String(title).trim(),
+                       node_revision: n.node_revision + 1, graph_revision: this.graphGet(n.graph_id).graph_revision,
+                       graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])) };
       this.store.dedupPut(command_id, result);
       return result;
     });
@@ -212,11 +283,11 @@ export class QuestionGraphService {
                           ON CONFLICT(node_id) DO UPDATE SET x_norm=excluded.x_norm, y_norm=excluded.y_norm,
                             layout_revision=layout_revision+1, pinned_by_user=1, updated_at=excluded.updated_at`)
         .run(node_id, x, y, (l?.layout_revision ?? 1) + 1, now);
-      this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?')
-        .run(now, n.graph_id);
-      const g = this.graphGet(n.graph_id);
-      const result = { graph_id: n.graph_id, node_id, x_norm: x, y_norm: y,
-                       layout_revision: (l?.layout_revision ?? 1) + 1, graph_revision: g.graph_revision };
+      const affected = this.descendantGraphIds(n.graph_id);
+      for (const gid of affected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
+      const result = { graph_id: n.graph_id, affected_graph_ids: affected, node_id, x_norm: x, y_norm: y,
+                       layout_revision: (l?.layout_revision ?? 1) + 1, graph_revision: this.graphGet(n.graph_id).graph_revision,
+                       graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])) };
       this.store.dedupPut(command_id, result);
       return result;
     });
@@ -238,10 +309,11 @@ export class QuestionGraphService {
       assert(n.node_revision === base_node_revision, ERR.CAS_MISMATCH, 'node_revision CAS 冲突');
       const now = nowIso();
       this.store.prepare('UPDATE nodes SET deleted_at=? WHERE node_id=?').run(now, node_id);
-      this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?')
-        .run(now, n.graph_id);
-      const g = this.graphGet(n.graph_id);
-      const r = { deleted: true, node_id, graph_id: n.graph_id, graph_revision: g.graph_revision };
+      const affected = this.descendantGraphIds(n.graph_id);
+      for (const gid of affected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
+      const r = { deleted: true, node_id, graph_id: n.graph_id, affected_graph_ids: affected,
+                  graph_revision: this.graphGet(n.graph_id).graph_revision,
+                  graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])) };
       this.store.dedupPut(command_id, r);
       return r;
     });

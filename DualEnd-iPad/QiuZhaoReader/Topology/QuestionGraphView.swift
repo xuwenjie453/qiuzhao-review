@@ -70,6 +70,12 @@ struct NodeShapeView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .offset(y: -(glyphSize / 2 + 24))
                 .allowsHitTesting(false)
+            if node.visibility == .INHERITED {
+                Image(systemName: "link").font(.caption2).foregroundColor(.blue)
+                    .padding(4).background(.thinMaterial, in: Circle())
+                    .offset(x: glyphSize / 2 - 4, y: glyphSize / 2 - 4)
+                    .allowsHitTesting(false)
+            }
         }
         .frame(width: hitSize, height: hitSize)
         .contentShape(Rectangle())

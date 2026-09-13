@@ -6,7 +6,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { nowIso } from '../util.mjs';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const DDL = `
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -21,6 +21,16 @@ CREATE TABLE IF NOT EXISTS graphs(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS graph_inheritance(
+  child_graph_id TEXT NOT NULL REFERENCES graphs(graph_id) ON DELETE CASCADE,
+  parent_graph_id TEXT NOT NULL REFERENCES graphs(graph_id) ON DELETE CASCADE,
+  inheritance_kind TEXT NOT NULL DEFAULT 'SHARED_EXPLANATIONS'
+    CHECK(inheritance_kind IN ('SHARED_EXPLANATIONS')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(child_graph_id, parent_graph_id),
+  CHECK(child_graph_id <> parent_graph_id)
+);
+CREATE INDEX IF NOT EXISTS idx_graph_inheritance_parent ON graph_inheritance(parent_graph_id);
 CREATE TABLE IF NOT EXISTS rounds(
   round_id TEXT PRIMARY KEY,
   graph_id TEXT NOT NULL REFERENCES graphs(graph_id),
@@ -105,10 +115,39 @@ export class StateDb {
     this.db.exec('PRAGMA foreign_keys = ON');
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec(DDL);
-    const m = this.db.prepare('SELECT value FROM meta WHERE key=?');
-    if (!m.get('schema_version')) {
+    this._migrate();
+  }
+
+  _migrate() {
+    const row = this.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version');
+    if (!row) {
       this.db.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('schema_version', String(SCHEMA_VERSION));
       this.db.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('created_at', nowIso());
+      return;
+    }
+    const current = Number(row.value);
+    if (!Number.isInteger(current) || current > SCHEMA_VERSION) {
+      throw new Error(`UNSUPPORTED_SCHEMA_VERSION ${row.value}`);
+    }
+    if (current < 2) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS graph_inheritance(
+          child_graph_id TEXT NOT NULL REFERENCES graphs(graph_id) ON DELETE CASCADE,
+          parent_graph_id TEXT NOT NULL REFERENCES graphs(graph_id) ON DELETE CASCADE,
+          inheritance_kind TEXT NOT NULL DEFAULT 'SHARED_EXPLANATIONS'
+            CHECK(inheritance_kind IN ('SHARED_EXPLANATIONS')),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(child_graph_id,parent_graph_id),
+          CHECK(child_graph_id <> parent_graph_id)
+        );`);
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_graph_inheritance_parent ON graph_inheritance(parent_graph_id)');
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run(String(SCHEMA_VERSION), 'schema_version');
+        this.db.exec('COMMIT');
+      } catch (e) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw e;
+      }
     }
   }
 

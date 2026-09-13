@@ -7,8 +7,13 @@ enum GraphCodec {
               let kindRaw = dict["kind"]?.string,
               let kind = NodeKind(rawValue: kindRaw) else { return nil }
         let layoutD = dict["layout"]?.dict
+        let visibility: NodeVisibility
+        if let raw = dict["visibility"]?.string { guard let parsed = NodeVisibility(rawValue: raw) else { return nil }; visibility = parsed }
+        else { visibility = .OWN }
         return GraphNodeDTO(
-            nodeId: nodeId, kind: kind,
+            nodeId: nodeId, ownerGraphId: dict["owner_graph_id"]?.string,
+            visibility: visibility,
+            kind: kind,
             title: dict["title"]?.string ?? "",
             bodyMarkdown: dict["body_markdown"]?.string ?? "",
             nodeRevision: dict["node_revision"]?.number.map { Int($0) } ?? 1,
@@ -27,10 +32,19 @@ enum GraphCodec {
             return node(from: d)
         }
         guard nodes.contains(where: { $0.nodeId == center }) else { return nil }
+        let parentValues = payload["parent_graphs"]?.array ?? []
+        let parents = parentValues.compactMap { v -> ParentGraphInfo? in
+            guard let d = v.dict, let gid = d["graph_id"]?.string,
+                  let kind = d["inheritance_kind"]?.string, kind == "SHARED_EXPLANATIONS" else { return nil }
+            return ParentGraphInfo(graphId: gid, inheritanceKind: kind)
+        }
+        guard parents.count == parentValues.count else { return nil }
         return GraphSnapshotDTO(graphId: graphId,
                                 questionKey: payload["question_key"]?.string ?? "",
                                 roundId: payload["round_id"]?.string,
                                 revision: payload["revision"]?.number.map { Int($0) } ?? 1,
-                                centerNodeId: center, nodes: nodes)
+                                centerNodeId: center,
+                                parentGraphs: parents,
+                                nodes: nodes)
     }
 }

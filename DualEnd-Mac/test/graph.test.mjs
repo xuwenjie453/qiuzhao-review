@@ -47,11 +47,11 @@ before(() => {
 after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('store 基础', () => {
-  test('integrity ok & schema_version=1', () => {
+  test('integrity ok & schema_version=2', () => {
     const ic = store.integrity();
     assert.equal(ic.integrity, 'ok');
     assert.equal(ic.fk_violations, 0);
-    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '1');
+    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '2');
   });
   test('server_seq 单调且 message_id 唯一', () => {
     const s1 = store.journalUnique('msg-a', 'TEST', null, { a: 1 }).serverSeq;
@@ -206,5 +206,23 @@ describe('graph_revision 单调递增', () => {
     svc.moveNode({ command_id: uid(), node_id: ex.node_id, x_norm: 0.3, y_norm: 0.3, base_layout_revision: ex.layout?.revision ?? 1 });
     const after = store.prepare('SELECT graph_revision FROM graphs').get().graph_revision;
     assert.ok(after >= before + 3);
+  });
+});
+
+describe('QuestionGraph inheritance effective view', () => {
+  test('Review graph inherits persistent parent explanations and fans out mutations', () => {
+    const parent = svc.open({ command_id: uid(), question_ref: {
+      source: 'QUESTION_BANK', question_key: 'qb:inherit-parent', source_id: 'inherit-parent'
+    }, question_body_markdown: 'parent', ai_title: 'Parent' });
+    const ex = svc.addNode({ command_id: uid(), round_id: parent.round_id, kind: 'EXPLANATION', ai_title: 'Shared', body_markdown: 'body' });
+    const child = openReview('inherit-probe');
+    svc.setInheritance({ command_id: uid(), child_graph_id: child.graph_id, parent_graph_id: parent.graph_id });
+    const snap = svc.snapshotPayload(child.graph_id, child.round_id);
+    const inherited = snap.nodes.find((n) => n.node_id === ex.node_id);
+    assert.equal(inherited.visibility, 'INHERITED');
+    assert.equal(inherited.owner_graph_id, parent.graph_id);
+    const renamed = svc.renameNode({ command_id: uid(), node_id: ex.node_id, title: 'Shared 2', base_node_revision: 1 });
+    assert.deepEqual(renamed.affected_graph_ids, [parent.graph_id, child.graph_id]);
+    assert.equal(svc.snapshotPayload(child.graph_id, child.round_id).nodes.find((n) => n.node_id === ex.node_id).title, 'Shared 2');
   });
 });
