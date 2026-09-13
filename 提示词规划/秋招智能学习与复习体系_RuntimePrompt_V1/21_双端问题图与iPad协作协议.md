@@ -22,9 +22,9 @@
 ## 三、CLI（Agent 使用；禁止直写 SQLite）
 
 ```bash
-# daemon 需先启动(常驻)
-node DualEnd-Mac/bin/qreview-dual.mjs daemon start
-node DualEnd-Mac/bin/qreview-dual.mjs daemon status
+# daemon 需先启动(常驻; 固定端口 57689 —— iPad 端静态直连依赖该端口)
+./DualEnd-Mac/bin/daemon-fixed.sh start     # 固定端口启动(含孤儿 Bonjour 广播清理)
+./DualEnd-Mac/bin/daemon-fixed.sh status
 
 # 开题
 node DualEnd-Mac/bin/qreview-dual.mjs question open --json /tmp/open.json
@@ -34,8 +34,9 @@ node DualEnd-Mac/bin/qreview-dual.mjs question open --json /tmp/open.json
 #   "question_body_markdown": "<题干原文 Markdown>",
 #   "ai_title": "<4-18字>"
 # }
-# REVIEW 来源:
-#   "question_ref": {"source": "REVIEW_CAPSULE", "question_key": "capsule:<capsule_id>:<probe_key>", "source_id": "<capsule_id>", "probe_key": "<probe_key>"}
+# REVIEW 来源：同一 capsule 无论本次 Probe 如何措辞，都复用同一张问题图。
+#   "question_ref": {"source": "REVIEW_CAPSULE", "question_key": "capsule:<capsule_id>", "source_id": "<capsule_id>", "probe_key": "<probe_key>"}
+# probe_key 仅描述本轮 retrieval probe，不参与 QuestionGraph 身份；CENTER 保留首次开题正文快照。
 
 # 把用户明确选中的解释加入
 node DualEnd-Mac/bin/qreview-dual.mjs graph add-node --json /tmp/add.json
@@ -62,4 +63,4 @@ iPad 端只能：拖动布局、改 title、删除非 CENTER 节点、Apple Penc
 
 ## 五、Agent 启动时
 
-若本机 daemon 未运行，学习会话开始时可选提示："问题图同步未启动（可选）：`node DualEnd-Mac/bin/qreview-dual.mjs daemon start`"。未启动不视为错误，学习照常。
+若本机 daemon 未运行，学习会话开始时可选提示："问题图同步未启动（可选）：`./DualEnd-Mac/bin/daemon-fixed.sh start`"。未启动不视为错误，学习照常。

@@ -70,14 +70,17 @@ export class SyncSession extends EventEmitter {
       .run(this.deviceId, nowIso());
     const lastSeq = this.store.prepare('SELECT COALESCE(MAX(server_seq),0) AS s FROM sync_journal').get().s;
     const active = this.svc.activeRound();
+    // durable-before-emit: 先 journal(唯一 message_id, 修复硬编码 'x' 冲突) 再 send。
+    // payload.server_seq 语义 = WELCOME 自身落库前的全局 max seq, 与历史行为一致。
+    const welcomeId = uuid();
+    this.store.journalUnique(welcomeId, 'WELCOME', null, { device_id: this.deviceId });
     this.send(MSG.WELCOME, {
       selected_protocol: 1,
       daemon_id: this.daemon.daemonId,
       session_epoch: this.epoch,
       server_seq: lastSeq,
       active: active ? { graph_id: active.graph_id, round_id: active.round_id } : null,
-    }, { messageId: 'x' });
-    this.store.journal('x', 'WELCOME', null, { device_id: this.deviceId });
+    }, { messageId: welcomeId });
     this.emit('hello');
     // 有 active round → 推 snapshot（graph push 由 daemon 统一处理 active 广播，这里主动推）
     if (active) {
@@ -102,21 +105,60 @@ export class SyncSession extends EventEmitter {
     const p = m.payload;
     const cmdId = p.command_id;
     const kind = p.kind;
+    const semantic = { command_id: cmdId, kind, graph_id: p.graph_id, payload: p.payload ?? {} };
+    // 先查 journal，再执行命令：同 message_id 的重放只能补 ACK，冲突必须拒绝且不得触发 CAS/业务副作用。
+    try {
+      const prior = this.store.findReplayable(m.message_id, kind, p.graph_id, semantic);
+      if (prior) {
+        const result = prior.payload?.result ?? {};
+        this.send(MSG.COMMAND_ACK, {
+          command_id: cmdId, kind,
+          canonical: { graph_revision: result.graph_revision,
+                       node_revision: result.node_revision,
+                       layout_revision: result.layout_revision,
+                       ink_revision: result.ink_revision },
+          server_seq: prior.serverSeq,
+        }, { messageId: m.message_id });
+        return;
+      }
+    } catch (e) {
+      if (e?.code === 'MESSAGE_ID_REUSE_CONFLICT') {
+        this.send(MSG.COMMAND_REJECTED,
+          { command_id: cmdId, kind, reason: 'MESSAGE_ID_REUSE_CONFLICT', message_id: m.message_id },
+          { messageId: m.message_id });
+        return;
+      }
+      throw e;
+    }
     const result = this.runCommand(cmdId, kind, p.graph_id, p.payload ?? {});
     if (result instanceof AppError || result?.error) {
       const code = result?.code ?? result?.error;
       this.send(MSG.COMMAND_REJECTED, { command_id: cmdId, reason: code, kind }, { messageId: m.message_id });
       return;
     }
-    // 成功: durable journal 后 ACK + 广播 patch
-    const seq = this.store.journal(m.message_id, kind, p.graph_id, { command_id: cmdId, result });
+    // 成功: durable journal 后 ACK + 广播 patch。
+    // journalReplayable: ACK 丢失后的合法重放 → 复用原 server_seq 并补 ACK(at-least-once
+    // delivery, exactly-once effect 由 svc 的 command_dedup 保证)。
+    let j;
+    try {
+      j = this.store.journalReplayable(m.message_id, kind, p.graph_id, { command_id: cmdId, result }, semantic);
+    } catch (e) {
+      if (e?.code === 'MESSAGE_ID_REUSE_CONFLICT') {
+        this.log?.error?.(e.message);
+        this.send(MSG.COMMAND_REJECTED,
+          { command_id: cmdId, kind, reason: 'MESSAGE_ID_REUSE_CONFLICT' },
+          { messageId: m.message_id });
+        return;
+      }
+      throw e;
+    }
     this.send(MSG.COMMAND_ACK, {
       command_id: cmdId, kind,
       canonical: { graph_revision: result.graph_revision,
                    node_revision: result.node_revision,
                    layout_revision: result.layout_revision,
                    ink_revision: result.ink_revision },
-      server_seq: seq,
+      server_seq: j.serverSeq,
     }, { messageId: m.message_id });
     // 广播 patch 给所有连接(含本会话其他端语义; v1 单 iPad)
     this.emit('graphChanged', { graphId: p.graph_id, actor: 'ipad', result });
@@ -148,19 +190,48 @@ export class SyncSession extends EventEmitter {
   onInkPut(m) {
     const p = m.payload;
     const blob = Buffer.from(p.blob ?? '', 'base64');
-    if (blob.length > MAX_INK) { this.send(MSG.COMMAND_REJECTED, { reason: 'INK_TOO_LARGE' }); return; }
+    const semantic = { command_id: p.command_id, kind: 'INK_PUT', graph_id: p.graph_id,
+      node_id: p.node_id, ink_revision: p.ink_revision, blob_sha256: p.blob_sha256 ?? null };
+    try {
+      const prior = this.store.findReplayable(m.message_id, 'INK_PUT', p.graph_id, semantic);
+      if (prior) {
+        const stored = prior.payload ?? {};
+        this.send(MSG.COMMAND_ACK, { command_id: p.command_id, kind: 'INK_PUT',
+          canonical: { ink_revision: stored.ink_revision }, server_seq: prior.serverSeq },
+          { messageId: m.message_id });
+        return;
+      }
+    } catch (e) {
+      if (e?.code === 'MESSAGE_ID_REUSE_CONFLICT') {
+        this.send(MSG.COMMAND_REJECTED,
+          { command_id: p.command_id, kind: 'INK_PUT', reason: 'MESSAGE_ID_REUSE_CONFLICT', message_id: m.message_id },
+          { messageId: m.message_id });
+        return;
+      }
+      throw e;
+    }
+    if (blob.length > MAX_INK) {
+      this.send(MSG.COMMAND_REJECTED,
+        { command_id: p.command_id, kind: 'INK_PUT', graph_id: p.graph_id, reason: 'INK_TOO_LARGE', message_id: m.message_id },
+        { messageId: m.message_id });
+      return;
+    }
     try {
       const r = this.svc.putInk({ command_id: p.command_id, node_id: p.node_id,
         ink_revision: p.ink_revision, format: p.format ?? 'pkdrawing-v1',
         blob, blob_sha256: p.blob_sha256, actor: 'IPAD' });
-      const seq = this.store.journal(m.message_id, 'INK_PUT', p.graph_id, { node_id: p.node_id, ink_revision: r.ink_revision });
+      // journalReplayable: 合法 ink 重放复用原 seq 并补 ACK; 语义冲突走 rejection。
+      const j = this.store.journalReplayable(m.message_id, 'INK_PUT', p.graph_id,
+        { node_id: p.node_id, ink_revision: r.ink_revision, command_id: p.command_id }, semantic);
       this.send(MSG.COMMAND_ACK, { command_id: p.command_id, kind: 'INK_PUT',
-        canonical: { ink_revision: r.ink_revision }, server_seq: seq }, { messageId: m.message_id });
+        canonical: { ink_revision: r.ink_revision }, server_seq: j.serverSeq }, { messageId: m.message_id });
       if (r.idempotent || r.stale) return;
       this.emit('inkChanged', { nodeId: p.node_id, inkRevision: r.ink_revision }); // 其它端拉取
     } catch (e) {
-      const code = e instanceof AppError ? e.code : ERR.INTERNAL;
-      this.send(MSG.COMMAND_REJECTED, { command_id: p.command_id, kind: 'INK_PUT', reason: code });
+      const code = e?.code ?? (e instanceof AppError ? e.code : ERR.INTERNAL);
+      this.send(MSG.COMMAND_REJECTED,
+        { command_id: p.command_id, kind: 'INK_PUT', graph_id: p.graph_id, reason: code, message_id: m.message_id },
+        { messageId: m.message_id });
     }
   }
 
@@ -180,21 +251,24 @@ export class SyncSession extends EventEmitter {
   // ---------- graph 事件推送 (canonical → iPad) ----------
   emitGraph(kind, payload, opts = {}) {
     if (kind === 'snapshot') {
-      const seq = this.store.journal(uuid(), 'GRAPH_SNAPSHOT', payload.graph_id, payload);
-      this.send(MSG.GRAPH_SNAPSHOT, payload);
-      return seq;
+      const messageId = uuid();
+      const j = this.store.journalUnique(messageId, 'GRAPH_SNAPSHOT', payload.graph_id, payload);
+      this.send(MSG.GRAPH_SNAPSHOT, payload, { messageId });
+      return j.serverSeq;
     }
     if (kind === 'patch') {
-      const seq = this.store.journal(uuid(), 'GRAPH_PATCH', payload.graph_id, payload);
-      this.send(MSG.GRAPH_PATCH, payload);
-      return seq;
+      const messageId = uuid();
+      const j = this.store.journalUnique(messageId, 'GRAPH_PATCH', payload.graph_id, payload);
+      this.send(MSG.GRAPH_PATCH, payload, { messageId });
+      return j.serverSeq;
     }
   }
 
   pushPatch(graphId, patch) {
-    const seq = this.store.journal(uuid(), 'GRAPH_PATCH', graphId, patch);
-    this.send(MSG.GRAPH_PATCH, patch);
-    return seq;
+    const messageId = uuid();
+    const j = this.store.journalUnique(messageId, 'GRAPH_PATCH', graphId, patch);
+    this.send(MSG.GRAPH_PATCH, patch, { messageId });
+    return j.serverSeq;
   }
   pushActive(graphId, roundId) {
     this.send(MSG.ACTIVE_GRAPH_CHANGED, { graph_id: graphId, round_id: roundId });

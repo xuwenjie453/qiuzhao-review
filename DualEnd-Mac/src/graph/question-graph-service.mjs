@@ -19,6 +19,24 @@ export class QuestionGraphService {
   graphByKey(questionKey) {
     return this.store.prepare('SELECT * FROM graphs WHERE question_key=?').get(questionKey);
   }
+  /**
+   * 图身份：正式题按题目 ID；Review 按 capsule ID。
+   * probe_key 只是本次 retrieval probe 的元数据，不能把同一 Capsule 的不同问法拆成多张图。
+   * 对旧数据按 source_id 查询，因而历史上已创建的 Capsule 图也会被复用。
+   */
+  graphByQuestionRef(questionRef) {
+    if (questionRef.source === 'REVIEW_CAPSULE') {
+      return this.store.prepare(`SELECT * FROM graphs
+        WHERE question_source='REVIEW_CAPSULE' AND source_id=?
+        ORDER BY created_at ASC LIMIT 1`).get(questionRef.source_id);
+    }
+    return this.graphByKey(questionRef.question_key);
+  }
+  graphIdentityKey(questionRef) {
+    return questionRef.source === 'REVIEW_CAPSULE'
+      ? `capsule:${questionRef.source_id}`
+      : questionRef.question_key;
+  }
   graphGet(graphId) {
     return this.store.prepare('SELECT * FROM graphs WHERE graph_id=?').get(graphId);
   }
@@ -62,21 +80,25 @@ export class QuestionGraphService {
   open({ command_id, actor = 'AGENT', question_ref, question_body_markdown, ai_title, agent_session_ref }) {
     assert(question_ref && ['QUESTION_BANK', 'REVIEW_CAPSULE'].includes(question_ref.source), ERR.VALIDATION, 'question_ref.source 非法');
     assert(question_ref.question_key && typeof question_ref.question_key === 'string', ERR.VALIDATION, '缺少 question_key');
+    if (question_ref.source === 'REVIEW_CAPSULE') {
+      assert(question_ref.source_id && typeof question_ref.source_id === 'string', ERR.VALIDATION, 'Review Capsule 缺少 source_id');
+    }
     assert(typeof question_body_markdown === 'string' && question_body_markdown.length > 0, ERR.VALIDATION, 'body 为空');
     assert(titleValid(ai_title), ERR.VALIDATION, `title 须为 1..${LIMITS.titleMax} 字符`);
     assert(question_body_markdown.length <= LIMITS.nodeBodyMaxBytes, ERR.VALIDATION, 'body 超限');
     return this.store.withTx(() => {
       const dup = this.store.dedupGet(command_id);
       if (dup) return dup;
-      const existed = !!this.graphByKey(question_ref.question_key);
-      let g = this.graphByKey(question_ref.question_key);
+      const identityKey = this.graphIdentityKey(question_ref);
+      const existed = !!this.graphByQuestionRef(question_ref);
+      let g = this.graphByQuestionRef(question_ref);
       const now = nowIso();
       if (!g) {
-        const graphId = stableId(question_ref.question_key);
+        const graphId = stableId(identityKey);
         const centerId = uuid();
         this.store.prepare(`INSERT INTO graphs(graph_id,question_key,question_source,source_id,probe_key,graph_revision,center_node_id,created_at,updated_at)
                             VALUES (?,?,?,?,?,1,?,?,?)`)
-          .run(graphId, question_ref.question_key, question_ref.source, question_ref.source_id ?? '',
+          .run(graphId, identityKey, question_ref.source, question_ref.source_id ?? '',
                question_ref.probe_key ?? null, centerId, now, now);
         this.store.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
                             VALUES (?,?,?,?,?,?,NULL,1,?)`)

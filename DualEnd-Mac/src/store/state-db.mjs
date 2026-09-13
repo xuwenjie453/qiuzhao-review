@@ -89,6 +89,14 @@ END;
 
 const TX = Symbol('tx');
 
+// 语义身份的 canonical 序列化: 键序无关, 重放比较不受对象构造顺序影响。
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
 export class StateDb {
   constructor(dbPath) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -132,11 +140,66 @@ export class StateDb {
   exec(sql) { this.db.exec(sql); }
 
   // ---- journal (durable-before-emit 的依据: 先落 journal 后广播/ACK) ----
-  journal(message_id, kind, graphId, payloadObj) {
+  // 两类语义(修复 2026-09-13, dual_end_repair_prompt_pack 02_MAC_FIX):
+  // journalUnique     —— 服务端自产生事件(WELCOME/SNAPSHOT/PATCH, UUID message_id)。
+  //                      重复仍是 bug, 保持裸 INSERT 的严格性。
+  // journalReplayable —— 客户端可重放消息(CLIENT_COMMAND/INK_PUT, at-least-once)。
+  //                      语义身份一致的重放复用原 server_seq 供补 ACK;
+  //                      不一致抛 MESSAGE_ID_REUSE_CONFLICT(协议违规, 必须拒绝)。
+  journalUnique(message_id, kind, graphId, payloadObj) {
     const r = this.db.prepare(
       'INSERT INTO sync_journal(message_id, kind, graph_id, payload_json, committed_at) VALUES (?,?,?,?,?)'
-    ).run(message_id, kind, graphId ?? null, JSON.stringify(payloadObj), nowIso());
-    return Number(r.lastInsertRowid);   // server_seq
+    ).run(message_id, kind, graphId ?? null, stableStringify(payloadObj), nowIso());
+    return { serverSeq: Number(r.lastInsertRowid), replay: false };
+  }
+
+  // Backwards-compatible raw journal API for non-replayable server events.
+  journal(message_id, kind, graphId, payloadObj) {
+    return this.journalUnique(message_id, kind, graphId, payloadObj).serverSeq;
+  }
+
+  // 查询可重放消息。返回 null 表示尚不存在；已存在时严格校验语义。
+  // 该查询必须在执行业务副作用前调用，避免 message_id 冲突先落成 CAS/业务错误。
+  findReplayable(message_id, kind, graphId, semantic) {
+    const row = this.db.prepare(
+      'SELECT server_seq, kind, graph_id, payload_json FROM sync_journal WHERE message_id=?'
+    ).get(message_id);
+    if (!row) return null;
+    let stored;
+    try { stored = JSON.parse(row.payload_json); } catch { stored = row.payload_json; }
+    const storedSemantic = stored && typeof stored === 'object' && stored._semantic
+      ? stored._semantic : stored;
+    const exact = row.kind === kind
+      && (row.graph_id ?? null) === (graphId ?? null)
+      && stableStringify(storedSemantic) === stableStringify(semantic);
+    // 兼容修复前已存在的 journal 行：旧行没有请求 payload，只能用其可用身份字段校验。
+    const legacy = !stored?._semantic && row.kind === kind
+      && (row.graph_id ?? null) === (graphId ?? null)
+      && stored && semantic
+      && (kind === 'INK_PUT'
+        ? (stored.node_id === semantic.node_id && stored.ink_revision === semantic.ink_revision)
+        : stored.command_id === semantic.command_id);
+    if (!exact && !legacy) {
+      const e = new Error(
+        `MESSAGE_ID_REUSE_CONFLICT message_id=${message_id} kind=${kind} `
+        + `command_id=${semantic?.command_id ?? ''} graph_id=${graphId ?? ''}`
+      );
+      e.code = 'MESSAGE_ID_REUSE_CONFLICT';
+      throw e;
+    }
+    return { serverSeq: Number(row.server_seq), replay: true, payload: stored, legacy };
+  }
+
+  journalReplayable(message_id, kind, graphId, payloadObj, semantic = payloadObj) {
+    const storedPayload = { ...payloadObj, _semantic: semantic };
+    const canonical = stableStringify(storedPayload);
+    const r = this.db.prepare(
+      `INSERT INTO sync_journal(message_id, kind, graph_id, payload_json, committed_at)
+       VALUES (?,?,?,?,?)
+       ON CONFLICT(message_id) DO NOTHING`
+    ).run(message_id, kind, graphId ?? null, canonical, nowIso());
+    if (Number(r.changes) === 1) return { serverSeq: Number(r.lastInsertRowid), replay: false };
+    return this.findReplayable(message_id, kind, graphId, semantic);
   }
 
   dedupGet(commandId) {

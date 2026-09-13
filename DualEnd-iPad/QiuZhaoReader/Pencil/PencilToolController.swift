@@ -43,6 +43,12 @@ final class PencilToolController: NSObject, UIPencilInteractionDelegate, Observa
             if let ink = current as? PKInkingTool { inkTool = ink }
             canvas.tool = inkTool
         }
-        self.isEraser = isEraser
+        // ★ @Published 即使写同值也会触发 objectWillChange；而 apply 在每次
+        // SwiftUI updateUIViewController 中被调用 → 无条件写会形成
+        // “更新→发布→重渲染→更新” 的死循环（主线程 99% CPU、界面卡死）。
+        // 只有值真正变化才允许发布。
+        if self.isEraser != isEraser {
+            self.isEraser = isEraser
+        }
     }
 }

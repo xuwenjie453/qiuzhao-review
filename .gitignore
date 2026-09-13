@@ -8,3 +8,6 @@ __pycache__/
 系统数据/
 DualEnd-Mac/node_modules/
 *.log
+
+# xcode build artifacts
+DualEnd-iPad/build/

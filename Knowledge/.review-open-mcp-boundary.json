@@ -1,0 +1,10 @@
+{
+  "question_ref": {
+    "source": "REVIEW_CAPSULE",
+    "question_key": "capsule:cap-37a9f898cafb",
+    "source_id": "cap-37a9f898cafb",
+    "probe_key": "2026-09-13-valid-schema-execution-boundary"
+  },
+  "question_body_markdown": "# MCP / Function Calling 边界复习\n\n模型生成了一条符合 JSON Schema 的 `delete_user` 工具调用。它能否因此直接执行？请简要说明：Schema 通过后仍由谁执行、还必须检查什么安全条件，以及模型为什么能生成这种结构化调用。",
+  "ai_title": "工具调用执行边界"
+}
