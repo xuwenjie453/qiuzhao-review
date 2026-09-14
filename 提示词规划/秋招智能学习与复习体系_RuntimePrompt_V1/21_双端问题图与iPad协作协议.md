@@ -7,7 +7,7 @@
 | 时机 | 命令 |
 |---|---|
 | TaskIntent 选中正式题并开始教学/诊断（LEARN/REPAIR） | `question.open` |
-| Review Capsule 生成具体 retrieval probe 并开始作答 | `question.open`（以 capsule/probe identity） |
+| Review Capsule 生成具体 retrieval probe 并开始作答 | `question.open`（以 capsule/probe identity；有明确主来源时声明 `inherit_from`） |
 | 用户**明确**要某段解释入图 | `graph.add-node` |
 | 本题结束 / 切换到下一题 | `question.close` |
 
@@ -18,6 +18,10 @@
 3. **title 可概括**：由 Agent 生成，建议 4–18 个中文字符。
 4. **daemon 不在线不阻断学习**：命令失败时告知"iPad 同步暂不可用"，继续正常学习与事件落库；禁止伪造"节点已加入"。
 5. 命令幂等：每次命令带新 `command_id`（UUID）。
+6. 正式 LEARN/REPAIR 继续以 `QUESTION_BANK` 开题；Review 继续以 `REVIEW_CAPSULE` 开题。若 Capsule 有明确 `primary_source_question_id`，Agent 在 `question.open` 中声明对应的 `inherit_from`（`QUESTION_BANK` / `qb:<question_id>`）。
+7. Agent 禁止读取 parent Explanation 后逐个 `graph.add-node` 复制到 Review 图；继承节点由 GraphService effective view 决定。
+8. Review 中对 inherited Explanation 的 rename/move/Ink 作用于共享 canonical node；删除 inherited node 按 global shared delete 理解，iPad 负责最终明确确认。
+9. parent graph 缺失不阻塞当前 Review；不伪造历史 Explanation。Review 自己新增的 Explanation 只归当前 Review 图，不回写原题图。
 
 ## 三、CLI（Agent 使用；禁止直写 SQLite）
 
@@ -36,6 +40,7 @@ node DualEnd-Mac/bin/qreview-dual.mjs question open --json /tmp/open.json
 # }
 # REVIEW 来源：同一 capsule 无论本次 Probe 如何措辞，都复用同一张问题图。
 #   "question_ref": {"source": "REVIEW_CAPSULE", "question_key": "capsule:<capsule_id>", "source_id": "<capsule_id>", "probe_key": "<probe_key>"}
+#   "inherit_from": {"source": "QUESTION_BANK", "question_key": "qb:<primary_source_question_id>", "source_id": "<primary_source_question_id>"}
 # probe_key 仅描述本轮 retrieval probe，不参与 QuestionGraph 身份；CENTER 保留首次开题正文快照。
 
 # 把用户明确选中的解释加入

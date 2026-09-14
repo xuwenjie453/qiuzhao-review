@@ -132,6 +132,8 @@ export class Daemon extends EventEmitter {
         result = svc.moveNode(payload); break;
       case 'node.delete':
         result = svc.deleteNode(payload); break;
+      case 'graph.set-inheritance':
+        result = svc.setInheritance(payload); break;
       default:
         return { error: 'UNKNOWN_KIND' };
     }
@@ -141,12 +143,20 @@ export class Daemon extends EventEmitter {
 
   /** 对全部已连接 iPad: 由 canonical 结果生成 GRAPH_PATCH 广播 */
   broadcastGraphChange(graphId, result) {
-    const round = this.svc.activeRound();
-    const targetRevision = this.svc.graphGet(graphId)?.graph_revision;
     if (this.sessions.size === 0) return;
-    const patch = this.buildPatch(graphId, result, targetRevision);
-    if (!patch) return;
-    for (const s of this.sessions) s.pushPatch(graphId, patch);
+    const graphIds = result.affected_graph_ids ?? [graphId];
+    for (const gid of graphIds) {
+      if (result.inherited) {
+        const round = this.svc.activeRound();
+        const snap = this.svc.snapshotPayload(gid, round?.graph_id === gid ? round.round_id : null);
+        if (snap) for (const s of this.sessions) s.emitGraph('snapshot', snap);
+        continue;
+      }
+      const targetRevision = this.svc.graphGet(gid)?.graph_revision;
+      const patch = this.buildPatch(gid, result, targetRevision);
+      if (!patch) continue;
+      for (const s of this.sessions) s.pushPatch(gid, patch);
+    }
   }
 
   /** 把 command 结果映射为增量 patch ops (title/move/delete/add 后由 caller 用 snapshot 或 patch) */
@@ -155,7 +165,7 @@ export class Daemon extends EventEmitter {
     const baseRevision = Math.max(1, (targetRevision ?? 1) - 1);
     if (result.created !== undefined) { // question.open: 整图 snapshot 更好
       const round = this.svc.activeRound();
-      const snap = this.svc.snapshotPayload(graphId, round?.round_id ?? null);
+      const snap = this.svc.snapshotPayload(graphId, round?.graph_id === graphId ? round.round_id : null);
       for (const s of this.sessions) s.emitGraph('snapshot', snap);
       return null;
     }
@@ -165,7 +175,8 @@ export class Daemon extends EventEmitter {
       const n = this.svc.nodeGet(result.node_id);
       const l = this.store.prepare('SELECT * FROM layouts WHERE node_id=?').get(result.node_id);
       ops.push({ op: 'ADD_NODE', node: {
-        node_id: n.node_id, kind: n.kind, title: n.title, body_markdown: n.body_markdown,
+        node_id: n.node_id, owner_graph_id: n.graph_id, visibility: n.graph_id === graphId ? 'OWN' : 'INHERITED',
+        kind: n.kind, title: n.title, body_markdown: n.body_markdown,
         node_revision: n.node_revision, layout: { x: l.x_norm, y: l.y_norm, revision: l.layout_revision } } });
     } else if (result.node_id && result.title !== undefined) {
       ops.push({ op: 'UPDATE_TITLE', node_id: result.node_id, title: result.title, node_revision: result.node_revision });

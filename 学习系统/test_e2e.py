@@ -70,9 +70,14 @@ def main():
         evidence={'had_failure': True, 'verified': True, 'importance': 5},
         allowed_probe_types=['explain', 'boundary'], response_budget='short_para',
         known_failure_modes=['误以为 b,c 条件可用联合索引(a,b,c)定位'],
-        source_questions=[qrow[0]])
+        source_questions=[qrow[0], 'secondary-question'],
+        primary_source_question_id=qrow[0])
     check('LEARNING_VERIFIED 事件落库', True)
     check('Capsule 生成并 REVIEW_ELIGIBLE', bool(cap))
+    kcheck = db.connect(db.ENGINE_DBS['Knowledge'])
+    caprow = kcheck.execute("SELECT primary_source_question_id, source_questions FROM review_capsules WHERE capsule_id=?", (cap,)).fetchone()
+    check('Capsule 显式 primary source 持久化', caprow['primary_source_question_id'] == qrow[0] and json.loads(caprow['source_questions'])[1] == 'secondary-question')
+    kcheck.close()
     kconn = db.connect(db.ENGINE_DBS['Knowledge'])
     st = kconn.execute("SELECT status FROM knowledge_states WHERE target_id=?", (kengines_target,)).fetchone()['status']
     check('状态投影 LEARNING_VERIFIED', st == 'LEARNING_VERIFIED')

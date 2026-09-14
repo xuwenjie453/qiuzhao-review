@@ -1,0 +1,9 @@
+{
+  "v": 2,
+  "message_id": "fixture-shared-delete",
+  "type": "GRAPH_PATCH",
+  "session_epoch": "epoch",
+  "sent_at": "2026-09-14T00:00:00+08:00",
+  "payload": {"graph_id": "review-graph", "base_revision": 14, "target_revision": 15,
+    "ops": [{"op": "REMOVE_NODE", "node_id": "E1", "visibility": "INHERITED"}]}
+}

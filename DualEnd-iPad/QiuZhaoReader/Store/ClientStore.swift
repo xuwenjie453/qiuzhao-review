@@ -13,10 +13,10 @@ final actor ClientStore {
     CREATE TABLE IF NOT EXISTS daemon_identity(daemon_id TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS graphs_cache(
       graph_id TEXT PRIMARY KEY, question_key TEXT NOT NULL, round_id TEXT,
-      revision INTEGER NOT NULL, center_node_id TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0,
+      revision INTEGER NOT NULL, center_node_id TEXT NOT NULL, parent_graphs_json TEXT NOT NULL DEFAULT '[]', active INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS nodes_cache(
-      node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+      node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, owner_graph_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL,
       body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL,
       x_norm REAL NOT NULL, y_norm REAL NOT NULL, layout_revision INTEGER NOT NULL,
       locally_deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
@@ -30,15 +30,29 @@ final actor ClientStore {
       entity_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
       attempt_count INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT,
       state TEXT NOT NULL DEFAULT 'PENDING');
+    CREATE TABLE IF NOT EXISTS graph_node_membership_cache(
+      graph_id TEXT NOT NULL, node_id TEXT NOT NULL, visibility TEXT NOT NULL,
+      PRIMARY KEY(graph_id,node_id));
     """
 
     init(dbPath: String) {
         guard let db = SQLiteDB(path: dbPath) else { fatalError("cannot open store \(dbPath)") }
         self.db = db
         try? db.exec(ClientStore.schema)
+        migrate()
     }
 
     static func inMemory() -> ClientStore { ClientStore(dbPath: ":memory:") }
+
+    private func migrate() {
+        // Additive migration for stores created by v1; all statements are idempotent.
+        let nodeCols = Set((try? db.query("PRAGMA table_info(nodes_cache)"))?.compactMap { $0["name"] as? String } ?? [])
+        let graphCols = Set((try? db.query("PRAGMA table_info(graphs_cache)"))?.compactMap { $0["name"] as? String } ?? [])
+        if !nodeCols.contains("owner_graph_id") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN owner_graph_id TEXT") }
+        if !graphCols.contains("parent_graphs_json") { try? db.exec("ALTER TABLE graphs_cache ADD COLUMN parent_graphs_json TEXT NOT NULL DEFAULT '[]'") }
+        try? db.exec("UPDATE nodes_cache SET owner_graph_id=graph_id WHERE owner_graph_id IS NULL")
+        try? db.exec("INSERT OR IGNORE INTO graph_node_membership_cache(graph_id,node_id,visibility) SELECT graph_id,node_id,'OWN' FROM nodes_cache")
+    }
 
     // MARK: - identity
     func preferredDaemonId() -> String? {
@@ -61,10 +75,13 @@ final actor ClientStore {
 
     func loadSnapshot(graphId: String) -> GraphSnapshotDTO? {
         guard let g = try? db.query("SELECT * FROM graphs_cache WHERE graph_id=?", [graphId]).first else { return nil }
-        let nodes = (try? db.query("SELECT * FROM nodes_cache WHERE graph_id=? AND locally_deleted=0 ORDER BY rowid",
+        let nodes = (try? db.query("SELECT n.*, m.visibility FROM nodes_cache n JOIN graph_node_membership_cache m ON m.node_id=n.node_id WHERE m.graph_id=? AND n.locally_deleted=0 ORDER BY n.rowid",
                                    [graphId]))?.compactMap { row -> GraphNodeDTO? in
             guard let kind = NodeKind(rawValue: row["kind"] as? String ?? "") else { return nil }
-            return GraphNodeDTO(nodeId: row["node_id"] as! String, kind: kind,
+            return GraphNodeDTO(nodeId: row["node_id"] as! String,
+                                ownerGraphId: row["owner_graph_id"] as? String,
+                                visibility: NodeVisibility(rawValue: row["visibility"] as? String ?? "OWN") ?? .OWN,
+                                kind: kind,
                                 title: row["title"] as? String ?? "",
                                 bodyMarkdown: row["body_markdown"] as? String ?? "",
                                 nodeRevision: (row["node_revision"] as? Int64).map(Int.init) ?? 1,
@@ -77,6 +94,13 @@ final actor ClientStore {
                                 roundId: g["round_id"] as? String,
                                 revision: (g["revision"] as? Int64).map(Int.init) ?? 1,
                                 centerNodeId: g["center_node_id"] as? String ?? "",
+                                parentGraphs: (g["parent_graphs_json"] as? String).flatMap {
+                                    guard let data = $0.data(using: .utf8), let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+                                    return arr.compactMap { d in
+                                        guard let gid = d["graph_id"] as? String, let kind = d["inheritance_kind"] as? String else { return nil }
+                                        return ParentGraphInfo(graphId: gid, inheritanceKind: kind)
+                                    }
+                                } ?? [],
                                 nodes: nodes)
     }
 
@@ -85,17 +109,20 @@ final actor ClientStore {
         guard let dto = GraphCodec.snapshot(from: payload) else { return nil }
         db.begin()
         defer { db.rollback() }
-        try? db.exec("INSERT OR REPLACE INTO graphs_cache(graph_id,question_key,round_id,revision,center_node_id,active,updated_at) VALUES (?,?,?,?,?,1,?)",
-                     [dto.graphId, dto.questionKey, dto.roundId ?? "", dto.revision, dto.centerNodeId, Date().timeIntervalSince1970])
+        let parents = (try? JSONEncoder().encode(dto.parentGraphs)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        try? db.exec("INSERT OR REPLACE INTO graphs_cache(graph_id,question_key,round_id,revision,center_node_id,parent_graphs_json,active,updated_at) VALUES (?,?,?,?,?,?,1,?)",
+                     [dto.graphId, dto.questionKey, dto.roundId ?? "", dto.revision, dto.centerNodeId, parents, Date().timeIntervalSince1970])
         // 保留本地未发送 outbox 意图的节点(不标删除): 简单策略——标记 server-absent 的本地 clean 节点为删除
-        let existing = (try? db.query("SELECT node_id FROM nodes_cache WHERE graph_id=?", [dto.graphId])) ?? []
+        let existing = (try? db.query("SELECT node_id FROM graph_node_membership_cache WHERE graph_id=?", [dto.graphId])) ?? []
         let serverIds = Set(dto.nodes.map(\.nodeId))
         for row in existing {
             let nid = row["node_id"] as? String ?? ""
             let deletedLocal = (row["locally_deleted"] as? Int64 ?? 0) > 0
             let hasOutbox = (try? db.query("SELECT 1 FROM outbox WHERE entity_id=? AND state!='' LIMIT 1", [nid]).first) != nil
             if !serverIds.contains(nid) && !deletedLocal && !hasOutbox {
-                try? db.exec("UPDATE nodes_cache SET locally_deleted=1 WHERE node_id=?", [nid])
+                try? db.exec("DELETE FROM graph_node_membership_cache WHERE graph_id=? AND node_id=?", [dto.graphId, nid])
+                let memberships = (try? db.query("SELECT 1 FROM graph_node_membership_cache WHERE node_id=? LIMIT 1", [nid]).first) != nil
+                if !memberships { try? db.exec("UPDATE nodes_cache SET locally_deleted=1 WHERE node_id=?", [nid]) }
             }
         }
         // upsert nodes（保留本地未同步 title/layout 意图）
@@ -107,9 +134,11 @@ final actor ClientStore {
             let title = (pending && local?["title"] != nil) ? (local?["title"] as? String ?? n.title) : n.title
             let x = (pendingMove ? local?["x_norm"] as? Double : nil) ?? n.layout.x
             let y = (pendingMove ? local?["y_norm"] as? Double : nil) ?? n.layout.y
-            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)",
-                [n.nodeId, dto.graphId, n.kind.rawValue, title, n.bodyMarkdown, n.nodeRevision,
+            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
+                [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.kind.rawValue, title, n.bodyMarkdown, n.nodeRevision,
                  x, y, n.layout.revision, Date().timeIntervalSince1970])
+            try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
+                         [dto.graphId, n.nodeId, n.visibility.rawValue])
         }
         try? db.exec("INSERT INTO inbox_dedup(message_id,kind,applied_at) VALUES (?,?,?)", [messageId, "GRAPH_SNAPSHOT", Date().timeIntervalSince1970])
         db.commit()
@@ -138,9 +167,11 @@ final actor ClientStore {
             switch opName {
             case "ADD_NODE":
                 guard let nv = op["node"]?.dict, let n = GraphCodec.node(from: nv) else { continue }
-                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)",
-                    [n.nodeId, graphId, n.kind.rawValue, n.title, n.bodyMarkdown, n.nodeRevision,
+                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
+                    [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.kind.rawValue, n.title, n.bodyMarkdown, n.nodeRevision,
                      n.layout.x, n.layout.y, n.layout.revision, Date().timeIntervalSince1970])
+                try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
+                             [graphId, n.nodeId, n.visibility.rawValue])
                 nodeDirty = true
             case "UPDATE_TITLE":
                 guard let nid = op["node_id"]?.string, let title = op["title"]?.string else { continue }
@@ -152,6 +183,7 @@ final actor ClientStore {
             case "REMOVE_NODE":
                 guard let nid = op["node_id"]?.string else { continue }
                 try? db.exec("UPDATE nodes_cache SET locally_deleted=1, updated_at=? WHERE node_id=?", [Date().timeIntervalSince1970, nid])
+                try? db.exec("DELETE FROM graph_node_membership_cache WHERE graph_id=? AND node_id=?", [graphId, nid])
                 nodeDirty = true
             default: break
             }

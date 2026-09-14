@@ -2,7 +2,7 @@
 // durable-before-emit: 每次 server 广播(SNapshot/Patch/ACK)前先写 sync_journal。
 // dedup: message_id one effect; session_epoch 隔离旧会话; ACK 携带 canonical revisions。
 import { EventEmitter } from 'node:events';
-import { AppError, ERR, nowIso, uuid } from '../util.mjs';
+import { AppError, ERR, nowIso, uuid, SUPPORTED_PROTOCOLS } from '../util.mjs';
 import { makeEnvelope, parseEnvelope, MSG } from '../protocol/envelope.mjs';
 
 const MAX_BODY = 2 * 1024 * 1024;
@@ -17,6 +17,7 @@ export class SyncSession extends EventEmitter {
     this.svc = svc;
     this.log = logger;
     this.epoch = null;
+    this.protocol = 2;
     this.deviceId = null;
     this.closed = false;
     conn.on('message', (text) => this.onMessage(text));
@@ -27,6 +28,7 @@ export class SyncSession extends EventEmitter {
     if (this.closed) return;
     this.conn.send(JSON.stringify(makeEnvelope(type, payload, {
       sessionEpoch: this.epoch, messageId: opts.messageId,
+      version: this.protocol,
     })));
   }
 
@@ -34,7 +36,7 @@ export class SyncSession extends EventEmitter {
     const parsed = parseEnvelope(raw);
     if (!parsed.ok) {
       if (parsed.code === 'PROTOCOL_UNSUPPORTED') {
-        this.send(MSG.COMMAND_REJECTED, { reason: 'PROTOCOL_UNSUPPORTED', supported_protocols: [1] });
+        this.send(MSG.COMMAND_REJECTED, { reason: 'PROTOCOL_UNSUPPORTED', supported_protocols: SUPPORTED_PROTOCOLS });
         this.conn.close(1002);
       }
       return; // 未知类型/坏 JSON: 记录并忽略, 不 crash
@@ -58,12 +60,13 @@ export class SyncSession extends EventEmitter {
   // ---------- 握手 ----------
   onHello(m) {
     const p = m.payload;
-    if (!p.device_id || !Array.isArray(p.supported_protocols) || !p.supported_protocols.includes(1)) {
+    if (!p.device_id || !Array.isArray(p.supported_protocols) || !p.supported_protocols.some((v) => SUPPORTED_PROTOCOLS.includes(v))) {
       this.send(MSG.COMMAND_REJECTED, { reason: 'PROTOCOL_UNSUPPORTED' });
       this.conn.close(1002);
       return;
     }
     this.deviceId = String(p.device_id);
+    this.protocol = p.supported_protocols.includes(2) ? 2 : 1;
     this.epoch = uuid();                       // 每次会话新 epoch
     this.store.prepare(`INSERT INTO device_state(device_id,last_seen_at,last_acked_server_seq)
                         VALUES (?,?,0) ON CONFLICT(device_id) DO UPDATE SET last_seen_at=excluded.last_seen_at`)
@@ -75,7 +78,7 @@ export class SyncSession extends EventEmitter {
     const welcomeId = uuid();
     this.store.journalUnique(welcomeId, 'WELCOME', null, { device_id: this.deviceId });
     this.send(MSG.WELCOME, {
-      selected_protocol: 1,
+      selected_protocol: this.protocol,
       daemon_id: this.daemon.daemonId,
       session_epoch: this.epoch,
       server_seq: lastSeq,
@@ -85,7 +88,8 @@ export class SyncSession extends EventEmitter {
     // 有 active round → 推 snapshot（graph push 由 daemon 统一处理 active 广播，这里主动推）
     if (active) {
       const snap = this.svc.snapshotPayload(active.graph_id, active.round_id);
-      if (snap) this.emitGraph('snapshot', snap, { causal: false });
+      if (snap && (this.protocol >= 2 || !snap.parent_graphs?.length)) this.emitGraph('snapshot', snap, { causal: false });
+      else if (snap?.parent_graphs?.length) this.send(MSG.COMMAND_REJECTED, { reason: 'UPGRADE_REQUIRED', graph_id: active.graph_id });
     }
   }
 
@@ -97,6 +101,9 @@ export class SyncSession extends EventEmitter {
     if (!g) { this.send(MSG.COMMAND_REJECTED, { reason: ERR.GRAPH_NOT_FOUND }); return; }
     const round = this.svc.activeRound();
     const snap = this.svc.snapshotPayload(gid, round?.round_id ?? null);
+    if (this.protocol < 2 && snap?.parent_graphs?.length) {
+      this.send(MSG.COMMAND_REJECTED, { reason: 'UPGRADE_REQUIRED', graph_id: gid }); return;
+    }
     this.emitGraph('snapshot', snap, { causal: false });
   }
 

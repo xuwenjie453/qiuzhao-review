@@ -37,6 +37,8 @@ struct LayoutDTO: Codable, Equatable {
 struct GraphNodeDTO: Codable, Identifiable, Equatable {
     var id: String { nodeId }
     let nodeId: String
+    let ownerGraphId: String?
+    let visibility: NodeVisibility
     let kind: NodeKind
     var title: String
     let bodyMarkdown: String
@@ -44,7 +46,20 @@ struct GraphNodeDTO: Codable, Identifiable, Equatable {
     var layout: LayoutDTO
 
     var isCenter: Bool { kind == .CENTER }
+    enum CodingKeys: String, CodingKey {
+        case nodeId = "node_id", ownerGraphId = "owner_graph_id", visibility, kind, title,
+             bodyMarkdown = "body_markdown", nodeRevision = "node_revision", layout
+    }
+
+    init(nodeId: String, ownerGraphId: String? = nil, visibility: NodeVisibility = .OWN,
+         kind: NodeKind, title: String, bodyMarkdown: String, nodeRevision: Int, layout: LayoutDTO) {
+        self.nodeId = nodeId; self.ownerGraphId = ownerGraphId; self.visibility = visibility
+        self.kind = kind; self.title = title; self.bodyMarkdown = bodyMarkdown
+        self.nodeRevision = nodeRevision; self.layout = layout
+    }
 }
+
+enum NodeVisibility: String, Codable { case OWN, INHERITED }
 
 struct GraphSnapshotDTO: Codable, Equatable {
     let graphId: String
@@ -52,10 +67,27 @@ struct GraphSnapshotDTO: Codable, Equatable {
     let roundId: String?
     var revision: Int
     let centerNodeId: String
+    let parentGraphs: [ParentGraphInfo]
     var nodes: [GraphNodeDTO]
+
+    init(graphId: String, questionKey: String, roundId: String?, revision: Int,
+         centerNodeId: String, parentGraphs: [ParentGraphInfo] = [], nodes: [GraphNodeDTO]) {
+        self.graphId = graphId; self.questionKey = questionKey; self.roundId = roundId
+        self.revision = revision; self.centerNodeId = centerNodeId; self.parentGraphs = parentGraphs; self.nodes = nodes
+    }
 
     func center() -> GraphNodeDTO? { nodes.first { $0.nodeId == centerNodeId } }
     func visibleChildren() -> [GraphNodeDTO] { nodes.filter { $0.nodeId != centerNodeId } }
+    enum CodingKeys: String, CodingKey {
+        case graphId = "graph_id", questionKey = "question_key", roundId = "round_id",
+             revision, centerNodeId = "center_node_id", parentGraphs = "parent_graphs", nodes
+    }
+}
+
+struct ParentGraphInfo: Codable, Equatable {
+    let graphId: String
+    let inheritanceKind: String
+    enum CodingKeys: String, CodingKey { case graphId = "graph_id", inheritanceKind = "inheritance_kind" }
 }
 
 struct ActiveGraphInfo: Codable, Equatable {

@@ -37,6 +37,12 @@ def connect(path: str, init: bool = False) -> sqlite3.Connection:
     if init:
         ddl = ALL[os.path.relpath(path, ROOT).replace(os.sep, '/')]
         conn.executescript(ddl)
+        # Additive migration for existing engine stores created before explicit
+        # Review Capsule source anchors were introduced.
+        if os.path.basename(path) in ('knowledge.sqlite3', 'algorithms.sqlite3', 'projects.sqlite3'):
+            cols = {r[1] for r in conn.execute('PRAGMA table_info(review_capsules)').fetchall()}
+            if 'primary_source_question_id' not in cols:
+                conn.execute('ALTER TABLE review_capsules ADD COLUMN primary_source_question_id TEXT')
         conn.execute("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         conn.execute("INSERT OR IGNORE INTO schema_meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
         conn.execute("INSERT OR IGNORE INTO schema_meta VALUES ('created_at', ?)", (now(),))

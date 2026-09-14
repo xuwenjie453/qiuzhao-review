@@ -89,7 +89,8 @@ struct CachedGraphInfo: Codable {
 
 /// 协议版本常量（与 Mac PROTOCOL_VERSION 对齐）
 enum WireV1 {
-    static let version = 1
+    static let version = 2
+    static let supportedVersions = [1, 2]
     static let bonjourService = "_qiuzhaoreview._tcp"
-    static let clientBuild = "1.0.0"
+    static let clientBuild = "2.0.0"
 }

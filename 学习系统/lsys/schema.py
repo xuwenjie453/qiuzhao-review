@@ -3,7 +3,7 @@
 哲学: Events are facts. States are projections.
 物理边界(架构冻结): scheduler 在根目录; 三引擎库在各自目录; materials 在资料库; questions 只属于试题库。
 """
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # ---------- scheduler.sqlite3 ----------
 SCHEDULER_SQL = """
@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS review_capsules (
     required_context    TEXT,                -- JSON
     response_budget     TEXT,                -- sentence/short_para/small_code/medium_code/short_decision
     source_questions    TEXT,                -- JSON数组(question_id)
+    primary_source_question_id TEXT,         -- 显式主锚点；禁止由 source_questions[0] 推断
     eligibility_evidence TEXT NOT NULL,      -- 为何值得长期复习
     compiler_version    TEXT NOT NULL,
     status              TEXT NOT NULL DEFAULT 'REVIEW_ELIGIBLE',

@@ -89,7 +89,8 @@ def cmd_learn_verify(a):
         evidence=json.loads(a.evidence) if a.evidence else {'verified_by': 'session'},
         allowed_probe_types=probes, response_budget=budget,
         known_failure_modes=a.failure_modes.split(';') if a.failure_modes else [],
-        source_questions=a.questions.split(',') if a.questions else [])
+        source_questions=a.questions.split(',') if a.questions else [],
+        primary_source_question_id=a.primary_source_question)
     print(json.dumps({'capsule_id': cap, 'status': 'REVIEW_ELIGIBLE', 'engine': a.engine,
                       'target_id': a.target, 'must_retrieve': must}, ensure_ascii=False, indent=1))
 
@@ -183,7 +184,7 @@ def main():
     p = sub.add_parser('learn-verify')
     p.add_argument('--engine', required=True); p.add_argument('--target', required=True)
     p.add_argument('--must-retrieve'); p.add_argument('--probes'); p.add_argument('--budget'); p.add_argument('--failure-modes')
-    p.add_argument('--questions'); p.add_argument('--question'); p.add_argument('--evidence'); p.add_argument('--at')
+    p.add_argument('--questions'); p.add_argument('--primary-source-question'); p.add_argument('--question'); p.add_argument('--evidence'); p.add_argument('--at')
     p.set_defaults(func=cmd_learn_verify)
     p = sub.add_parser('review-show'); p.add_argument('--engine'); p.add_argument('--now'); p.set_defaults(func=cmd_review_show)
     p = sub.add_parser('review-grade'); p.add_argument('--capsule', required=True); p.add_argument('--engine', required=True)
