@@ -48,7 +48,7 @@ export class QuestionGraphService {
   }
 
   parentGraphs(graphId) {
-    return this.store.prepare(`SELECT g.* FROM graph_inheritance i JOIN graphs g ON g.graph_id=i.parent_graph_id
+    return this.store.prepare(`SELECT g.*, i.inheritance_kind FROM graph_inheritance i JOIN graphs g ON g.graph_id=i.parent_graph_id
       WHERE i.child_graph_id=? ORDER BY g.graph_id`).all(graphId);
   }
 

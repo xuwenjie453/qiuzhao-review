@@ -218,6 +218,7 @@ describe('QuestionGraph inheritance effective view', () => {
     const child = openReview('inherit-probe');
     svc.setInheritance({ command_id: uid(), child_graph_id: child.graph_id, parent_graph_id: parent.graph_id });
     const snap = svc.snapshotPayload(child.graph_id, child.round_id);
+    assert.deepEqual(snap.parent_graphs, [{ graph_id: parent.graph_id, inheritance_kind: 'SHARED_EXPLANATIONS' }]);
     const inherited = snap.nodes.find((n) => n.node_id === ex.node_id);
     assert.equal(inherited.visibility, 'INHERITED');
     assert.equal(inherited.owner_graph_id, parent.graph_id);
