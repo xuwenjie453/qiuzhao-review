@@ -45,6 +45,7 @@ def connect(path: str, init: bool = False) -> sqlite3.Connection:
                 conn.execute('ALTER TABLE review_capsules ADD COLUMN primary_source_question_id TEXT')
         conn.execute("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         conn.execute("INSERT OR IGNORE INTO schema_meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+        conn.execute("UPDATE schema_meta SET value=? WHERE key='schema_version'", (SCHEMA_VERSION,))
         conn.execute("INSERT OR IGNORE INTO schema_meta VALUES ('created_at', ?)", (now(),))
         conn.execute("UPDATE schema_meta SET value=? WHERE key='updated_at'", (now(),))
     conn.commit()

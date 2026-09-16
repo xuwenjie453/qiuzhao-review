@@ -20,22 +20,22 @@ export class QuestionGraphService {
     return this.store.prepare('SELECT * FROM graphs WHERE question_key=?').get(questionKey);
   }
   /**
-   * 图身份：正式题按题目 ID；Review 按 capsule ID。
+   * 图身份：正式题按题目 ID；Review 按 capsule ID；用户自拟图按系统生成的 custom ID。
    * probe_key 只是本次 retrieval probe 的元数据，不能把同一 Capsule 的不同问法拆成多张图。
    * 对旧数据按 source_id 查询，因而历史上已创建的 Capsule 图也会被复用。
    */
   graphByQuestionRef(questionRef) {
-    if (questionRef.source === 'REVIEW_CAPSULE') {
+    if (questionRef.source === 'REVIEW_CAPSULE' || questionRef.source === 'USER_AUTHORED') {
       return this.store.prepare(`SELECT * FROM graphs
-        WHERE question_source='REVIEW_CAPSULE' AND source_id=?
-        ORDER BY created_at ASC LIMIT 1`).get(questionRef.source_id);
+        WHERE question_source=? AND source_id=?
+        ORDER BY created_at ASC LIMIT 1`).get(questionRef.source, questionRef.source_id);
     }
     return this.graphByKey(questionRef.question_key);
   }
   graphIdentityKey(questionRef) {
-    return questionRef.source === 'REVIEW_CAPSULE'
-      ? `capsule:${questionRef.source_id}`
-      : questionRef.question_key;
+    if (questionRef.source === 'REVIEW_CAPSULE') return `capsule:${questionRef.source_id}`;
+    if (questionRef.source === 'USER_AUTHORED') return `user:${questionRef.source_id}`;
+    return questionRef.question_key;
   }
   graphGet(graphId) {
     return this.store.prepare('SELECT * FROM graphs WHERE graph_id=?').get(graphId);
@@ -45,6 +45,28 @@ export class QuestionGraphService {
   }
   nodeGet(nodeId) {
     return this.store.prepare('SELECT * FROM nodes WHERE node_id=?').get(nodeId);
+  }
+
+  userGraphById(customId) {
+    return this.store.prepare(`SELECT g.graph_id, g.source_id AS custom_id, g.question_key,
+      n.title, n.body_markdown, g.graph_revision, g.created_at, g.updated_at,
+      (SELECT count(*) FROM nodes c WHERE c.graph_id=g.graph_id AND c.deleted_at IS NULL) AS node_count
+      FROM graphs g JOIN nodes n ON n.node_id=g.center_node_id
+      WHERE g.question_source='USER_AUTHORED' AND g.source_id=?`).get(customId);
+  }
+
+  listUserGraphs(query = '') {
+    const needle = String(query ?? '').trim();
+    const sql = `SELECT g.graph_id, g.source_id AS custom_id, g.question_key,
+      n.title, n.body_markdown, g.graph_revision, g.created_at, g.updated_at,
+      (SELECT count(*) FROM nodes c WHERE c.graph_id=g.graph_id AND c.deleted_at IS NULL) AS node_count
+      FROM graphs g JOIN nodes n ON n.node_id=g.center_node_id
+      WHERE g.question_source='USER_AUTHORED'
+      ${needle ? "AND (g.source_id LIKE ? OR n.title LIKE ? OR n.body_markdown LIKE ?)" : ''}
+      ORDER BY g.updated_at DESC, g.created_at DESC`;
+    if (!needle) return this.store.prepare(sql).all();
+    const like = `%${needle}%`;
+    return this.store.prepare(sql).all(like, like, like);
   }
 
   parentGraphs(graphId) {
@@ -131,10 +153,10 @@ export class QuestionGraphService {
   // ============ Commands ============
   /** question.open: ensure graph + 新 round。全局同时仅一个 ACTIVE round。 */
   open({ command_id, actor = 'AGENT', question_ref, question_body_markdown, ai_title, agent_session_ref, inherit_from }) {
-    assert(question_ref && ['QUESTION_BANK', 'REVIEW_CAPSULE'].includes(question_ref.source), ERR.VALIDATION, 'question_ref.source 非法');
+    assert(question_ref && ['QUESTION_BANK', 'REVIEW_CAPSULE', 'USER_AUTHORED'].includes(question_ref.source), ERR.VALIDATION, 'question_ref.source 非法');
     assert(question_ref.question_key && typeof question_ref.question_key === 'string', ERR.VALIDATION, '缺少 question_key');
-    if (question_ref.source === 'REVIEW_CAPSULE') {
-      assert(question_ref.source_id && typeof question_ref.source_id === 'string', ERR.VALIDATION, 'Review Capsule 缺少 source_id');
+    if (question_ref.source === 'REVIEW_CAPSULE' || question_ref.source === 'USER_AUTHORED') {
+      assert(question_ref.source_id && typeof question_ref.source_id === 'string', ERR.VALIDATION, '缺少 source_id');
     }
     assert(typeof question_body_markdown === 'string' && question_body_markdown.length > 0, ERR.VALIDATION, 'body 为空');
     assert(titleValid(ai_title), ERR.VALIDATION, `title 须为 1..${LIMITS.titleMax} 字符`);

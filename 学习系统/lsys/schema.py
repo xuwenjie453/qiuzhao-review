@@ -3,7 +3,7 @@
 哲学: Events are facts. States are projections.
 物理边界(架构冻结): scheduler 在根目录; 三引擎库在各自目录; materials 在资料库; questions 只属于试题库。
 """
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 # ---------- scheduler.sqlite3 ----------
 SCHEDULER_SQL = """
@@ -69,6 +69,34 @@ CREATE TABLE IF NOT EXISTS review_schedule (
 );
 CREATE INDEX IF NOT EXISTS idx_rs_active ON review_schedule(active, next_due_at);
 CREATE INDEX IF NOT EXISTS idx_rs_engine ON review_schedule(engine_type, target_id);
+
+-- 用户自拟问题图使用独立时序，不混入正式 Review Capsule。
+CREATE TABLE IF NOT EXISTS user_graph_review_schedule (
+    custom_id       TEXT PRIMARY KEY,
+    frequency       TEXT NOT NULL CHECK(frequency IN ('HIGH','MEDIUM','LOW')),
+    cadence_json    TEXT NOT NULL,            -- 创建/改频时冻结的间隔序列（天）
+    sequence_index  INTEGER NOT NULL DEFAULT 0,
+    last_reviewed_at TEXT,
+    next_due_at     TEXT NOT NULL,
+    review_count    INTEGER NOT NULL DEFAULT 0,
+    active          INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ugrs_due ON user_graph_review_schedule(active, next_due_at);
+
+CREATE TABLE IF NOT EXISTS user_graph_review_events (
+    event_id        TEXT PRIMARY KEY,
+    custom_id       TEXT NOT NULL REFERENCES user_graph_review_schedule(custom_id),
+    occurred_at     TEXT NOT NULL,
+    event_type      TEXT NOT NULL CHECK(event_type IN
+                      ('REGISTERED','REVIEW_SHOWN','REVIEW_COMPLETED','FREQUENCY_CHANGED','PAUSED','RESUMED')),
+    frequency       TEXT NOT NULL,
+    sequence_index  INTEGER NOT NULL,
+    due_at          TEXT,
+    payload_json    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ugre_graph_time ON user_graph_review_events(custom_id, occurred_at);
 """
 
 # ---------- 三引擎共用形态 ----------

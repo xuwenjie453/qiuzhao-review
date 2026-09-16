@@ -30,6 +30,15 @@ function openReview(probeKey, body = '请解释 RAG 的离线与在线流程。'
     ai_title: 'RAG复习探针',
   });
 }
+function openUserGraph(customId, title = '我的自拟问题', body = '这是我自拟的问题正文。') {
+  return svc.open({
+    command_id: crypto.randomUUID(), question_ref: {
+      source: 'USER_AUTHORED', question_key: `user:${customId}`, source_id: customId,
+    },
+    question_body_markdown: body,
+    ai_title: title,
+  });
+}
 const uid = () => crypto.randomUUID();
 
 /** 确保存在一个 ACTIVE round 并返回(必要时 open 新一轮)。 */
@@ -47,11 +56,11 @@ before(() => {
 after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('store 基础', () => {
-  test('integrity ok & schema_version=2', () => {
+  test('integrity ok & schema_version=3', () => {
     const ic = store.integrity();
     assert.equal(ic.integrity, 'ok');
     assert.equal(ic.fk_violations, 0);
-    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '2');
+    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '3');
   });
   test('server_seq 单调且 message_id 唯一', () => {
     const s1 = store.journalUnique('msg-a', 'TEST', null, { a: 1 }).serverSeq;
@@ -80,6 +89,18 @@ describe('graph identity & open', () => {
     assert.equal(graph.question_key, 'capsule:cap-rag');
     const center = store.prepare('SELECT body_markdown FROM nodes WHERE node_id=?').get(graph.center_node_id);
     assert.equal(center.body_markdown, '请解释 RAG 的离线与在线流程。');
+  });
+  test('用户自拟图按 custom ID 唯一持久化、可检索并重开', () => {
+    const first = openUserGraph('ug-test-001', '自拟并发题', '为什么 volatile 不能保证复合操作原子性？');
+    const reopened = openUserGraph('ug-test-001', '不会覆盖的标题', '不会覆盖的正文');
+    const another = openUserGraph('ug-test-002', '自拟缓存题', '缓存击穿和缓存穿透有什么区别？');
+    assert.equal(first.graph_id, reopened.graph_id);
+    assert.notEqual(first.graph_id, another.graph_id);
+    const found = svc.userGraphById('ug-test-001');
+    assert.equal(found.title, '自拟并发题');
+    assert.equal(found.body_markdown, '为什么 volatile 不能保证复合操作原子性？');
+    assert.ok(svc.listUserGraphs('并发').some((g) => g.custom_id === 'ug-test-001'));
+    assert.equal(svc.listUserGraphs().filter((g) => g.custom_id.startsWith('ug-test-')).length, 2);
   });
   test('snapshot 必含 CENTER; center layout 0.5,0.5', () => {
     const g = store.prepare('SELECT * FROM graphs').get();

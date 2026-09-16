@@ -10,6 +10,8 @@
 | Review Capsule 生成具体 retrieval probe 并开始作答 | `question.open`（以 capsule/probe identity；有明确主来源时声明 `inherit_from`） |
 | 用户**明确**要某段解释入图 | `graph.add-node` |
 | 本题结束 / 切换到下一题 | `question.close` |
+| 用户明确要创建自拟问题图 | `custom create` |
+| 用户要查看/重开自拟问题图 | `custom list/show/open` |
 
 ## 二、硬性规则（违反即失信）
 
@@ -22,8 +24,21 @@
 7. Agent 禁止读取 parent Explanation 后逐个 `graph.add-node` 复制到 Review 图；继承节点由 GraphService effective view 决定。
 8. Review 中对 inherited Explanation 的 rename/move/Ink 作用于共享 canonical node；删除 inherited node 按 global shared delete 理解，iPad 负责最终明确确认。
 9. parent graph 缺失不阻塞当前 Review；不伪造历史 Explanation。Review 自己新增的 Explanation 只归当前 Review 图，不回写原题图。
+10. **自拟图永久登记**：用户明确提出自拟问题时，以 `USER_AUTHORED` 来源创建，系统生成唯一 `custom_id`；不得伪装成正式题、不得写入 `questions.sqlite3`。以后按 ID、标题或正文关键词检索并重新打开同一张图，保留其布局、解释节点与笔迹。
+11. **自拟图独立调度**：创建时必须登记 HIGH/MEDIUM/LOW 之一；用户未说明时默认 MEDIUM。时序写入根 `scheduler.sqlite3` 的独立表，不进入正式 `review_schedule`，也不生成 Review Capsule。
+12. **完成边界**：`user-graph-open` 只记录 `REVIEW_SHOWN`，绝不推进周期；只有用户明确说“看完了/完成复习”才记录 `REVIEW_COMPLETED` 并计算下一次到期。到期只是候选，一次只呈现一张，用户跳过时保持原到期状态。
 
-## 三、CLI（Agent 使用；禁止直写 SQLite）
+## 三、自拟图周期序列
+
+| 频率 | 间隔序列（天） | 末档行为 |
+|---|---|---|
+| HIGH / 高频 | `1 → 2 → 4 → 7 → 14 → 30` | 每 30 天 |
+| MEDIUM / 中频 | `3 → 7 → 14 → 30 → 60` | 每 60 天 |
+| LOW / 低频 | `7 → 21 → 45 → 90` | 每 90 天 |
+
+创建/改频时把序列快照写入该图的 schedule，避免未来默认参数变化静默改写已有计划。改频保留历史复习次数，并按新序列的对应阶段继续。
+
+## 四、CLI（Agent 使用；禁止直写 SQLite）
 
 ```bash
 # daemon 需先启动(常驻; 固定端口 57689 —— iPad 端静态直连依赖该端口)
@@ -54,9 +69,23 @@ node DualEnd-Mac/bin/qreview-dual.mjs question close --round <round_id>
 
 # 查看当前图
 node DualEnd-Mac/bin/qreview-dual.mjs graph snapshot
+
+# 自拟问题图（create.json: {"title":"...","body_markdown":"..."}）
+# 统一入口会同时创建 canonical 图与独立 schedule
+python3 学习系统/cli.py user-graph-create --json /tmp/create.json --frequency high
+python3 学习系统/cli.py user-graph-due --limit 1
+python3 学习系统/cli.py user-graph-open --id <custom_id>
+python3 学习系统/cli.py user-graph-complete --id <custom_id>
+python3 学习系统/cli.py user-graph-frequency --id <custom_id> --frequency low
+python3 学习系统/cli.py user-graph-list
+
+# 底层图查询入口（只查图，不推进 schedule）
+node DualEnd-Mac/bin/qreview-dual.mjs custom list [--query <标题或正文关键词>]
+node DualEnd-Mac/bin/qreview-dual.mjs custom show --id <custom_id>
+node DualEnd-Mac/bin/qreview-dual.mjs custom open --id <custom_id>
 ```
 
-## 四、节点语义
+## 五、节点语义
 
 | kind | 形状 | 生命周期 | 说明 |
 |---|---|---|---|
@@ -66,6 +95,6 @@ node DualEnd-Mac/bin/qreview-dual.mjs graph snapshot
 
 iPad 端只能：拖动布局、改 title、删除非 CENTER 节点、Apple Pencil 手写（ink 按 `node_id` 永久绑定）。**iPad 不参与 Agent 对话、不能改正文。**
 
-## 五、Agent 启动时
+## 六、Agent 启动时
 
 若本机 daemon 未运行，学习会话开始时可选提示："问题图同步未启动（可选）：`./DualEnd-Mac/bin/daemon-fixed.sh start`"。未启动不视为错误，学习照常。

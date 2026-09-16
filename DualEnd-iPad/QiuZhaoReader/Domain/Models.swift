@@ -4,9 +4,10 @@ import Foundation
 enum QuestionSource: String, Codable {
     case QUESTION_BANK
     case REVIEW_CAPSULE
+    case USER_AUTHORED
 }
 
-/// question_key: "qb:<question_id>" 或 "capsule:<capsule_id>"；Review 的 probe_key 仅描述本轮问法，不参与图身份。
+/// question_key: "qb:<question_id>"、"capsule:<capsule_id>" 或 "user:<custom_id>"；Review 的 probe_key 仅描述本轮问法，不参与图身份。
 struct QuestionRef: Codable, Equatable {
     let source: QuestionSource
     let questionKey: String
@@ -19,6 +20,10 @@ struct QuestionRef: Codable, Equatable {
     static func capsule(_ capsuleId: String, probeKey: String) -> QuestionRef {
         QuestionRef(source: .REVIEW_CAPSULE, questionKey: "capsule:\(capsuleId)",
                     sourceId: capsuleId, probeKey: probeKey)
+    }
+    static func userAuthored(_ customId: String) -> QuestionRef {
+        QuestionRef(source: .USER_AUTHORED, questionKey: "user:\(customId)",
+                    sourceId: customId, probeKey: nil)
     }
 }
 

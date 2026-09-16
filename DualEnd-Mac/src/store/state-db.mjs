@@ -6,14 +6,14 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { nowIso } from '../util.mjs';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const DDL = `
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS graphs(
   graph_id TEXT PRIMARY KEY,
   question_key TEXT NOT NULL UNIQUE,
-  question_source TEXT NOT NULL CHECK(question_source IN ('QUESTION_BANK','REVIEW_CAPSULE')),
+  question_source TEXT NOT NULL CHECK(question_source IN ('QUESTION_BANK','REVIEW_CAPSULE','USER_AUTHORED')),
   source_id TEXT NOT NULL,
   probe_key TEXT,
   graph_revision INTEGER NOT NULL DEFAULT 1,
@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS graphs(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_graphs_user_source_id
+  ON graphs(source_id) WHERE question_source='USER_AUTHORED';
 CREATE TABLE IF NOT EXISTS graph_inheritance(
   child_graph_id TEXT NOT NULL REFERENCES graphs(graph_id) ON DELETE CASCADE,
   parent_graph_id TEXT NOT NULL REFERENCES graphs(graph_id) ON DELETE CASCADE,
@@ -125,7 +127,7 @@ export class StateDb {
       this.db.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('created_at', nowIso());
       return;
     }
-    const current = Number(row.value);
+    let current = Number(row.value);
     if (!Number.isInteger(current) || current > SCHEMA_VERSION) {
       throw new Error(`UNSUPPORTED_SCHEMA_VERSION ${row.value}`);
     }
@@ -142,11 +144,45 @@ export class StateDb {
           CHECK(child_graph_id <> parent_graph_id)
         );`);
         this.db.exec('CREATE INDEX IF NOT EXISTS idx_graph_inheritance_parent ON graph_inheritance(parent_graph_id)');
-        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run(String(SCHEMA_VERSION), 'schema_version');
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('2', 'schema_version');
+        this.db.exec('COMMIT');
+        current = 2;
+      } catch (e) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw e;
+      }
+    }
+    if (current < 3) {
+      // SQLite 不能直接修改 CHECK；在关闭外键检查后原位重建父表。
+      // graph_id/center_node_id 原值全部保留，因此 rounds/nodes/inheritance 引用保持有效。
+      this.db.exec('PRAGMA foreign_keys = OFF');
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.exec(`CREATE TABLE graphs_v3(
+          graph_id TEXT PRIMARY KEY,
+          question_key TEXT NOT NULL UNIQUE,
+          question_source TEXT NOT NULL CHECK(question_source IN ('QUESTION_BANK','REVIEW_CAPSULE','USER_AUTHORED')),
+          source_id TEXT NOT NULL,
+          probe_key TEXT,
+          graph_revision INTEGER NOT NULL DEFAULT 1,
+          center_node_id TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );`);
+        this.db.exec(`INSERT INTO graphs_v3(
+          graph_id,question_key,question_source,source_id,probe_key,graph_revision,center_node_id,created_at,updated_at
+        ) SELECT graph_id,question_key,question_source,source_id,probe_key,graph_revision,center_node_id,created_at,updated_at FROM graphs;`);
+        this.db.exec('DROP TABLE graphs');
+        this.db.exec('ALTER TABLE graphs_v3 RENAME TO graphs');
+        this.db.exec(`CREATE UNIQUE INDEX idx_graphs_user_source_id
+          ON graphs(source_id) WHERE question_source='USER_AUTHORED';`);
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('3', 'schema_version');
         this.db.exec('COMMIT');
       } catch (e) {
         try { this.db.exec('ROLLBACK'); } catch {}
         throw e;
+      } finally {
+        this.db.exec('PRAGMA foreign_keys = ON');
       }
     }
   }

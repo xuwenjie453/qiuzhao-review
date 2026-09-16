@@ -22,6 +22,8 @@ const QUERY_ROUTES = {
     return d.svc.snapshotPayload(gid, round?.round_id ?? null);
   },
   '/graph/get-by-question': (d, q) => d.svc.graphByKey(q.get('question_key')) ?? { error: 'GRAPH_NOT_FOUND' },
+  '/custom/list': (d, q) => ({ items: d.svc.listUserGraphs(q.get('query') ?? '') }),
+  '/custom/get': (d, q) => d.svc.userGraphById(q.get('id')) ?? { error: 'USER_GRAPH_NOT_FOUND' },
 };
 
 export class LocalControl {

@@ -104,6 +104,50 @@ async function main() {
       }
       return;
     }
+    case 'custom': {
+      if (sub === 'create') {
+        const req = loadJson(flag('--json', ''));
+        const customId = `ug-${crypto.randomUUID()}`;
+        const title = req.title ?? req.ai_title;
+        const body = req.body_markdown ?? req.question_body_markdown;
+        const r = await requestControl('POST', '/command', {
+          command_id: crypto.randomUUID(), kind: 'question.open',
+          question_ref: {
+            source: 'USER_AUTHORED', question_key: `user:${customId}`, source_id: customId,
+          },
+          question_body_markdown: body, ai_title: title,
+        });
+        console.log(JSON.stringify(r.status < 300 ? { custom_id: customId, ...r.json } : r.json, null, 2));
+      } else if (sub === 'list') {
+        const query = flag('--query', '');
+        const r = await requestControl('GET', `/custom/list?query=${encodeURIComponent(query)}`);
+        console.log(JSON.stringify(r.json, null, 2));
+      } else if (sub === 'show') {
+        const customId = flag('--id', '');
+        const r = await requestControl('GET', `/custom/get?id=${encodeURIComponent(customId)}`);
+        console.log(JSON.stringify(r.json, null, 2));
+      } else if (sub === 'open') {
+        const customId = flag('--id', '');
+        const found = await requestControl('GET', `/custom/get?id=${encodeURIComponent(customId)}`);
+        if (found.status >= 300 || found.json?.error) {
+          console.log(JSON.stringify(found.json, null, 2));
+          process.exitCode = 1;
+          return;
+        }
+        const r = await requestControl('POST', '/command', {
+          command_id: crypto.randomUUID(), kind: 'question.open',
+          question_ref: {
+            source: 'USER_AUTHORED', question_key: `user:${customId}`, source_id: customId,
+          },
+          question_body_markdown: found.json.body_markdown,
+          ai_title: found.json.title,
+        });
+        console.log(JSON.stringify({ custom_id: customId, ...r.json }, null, 2));
+      } else {
+        usage();
+      }
+      return;
+    }
     default:
       usage();
   }
@@ -116,7 +160,11 @@ function usage() {
   node DualEnd-Mac/bin/qreview-dual.mjs question open --json request.json
   node DualEnd-Mac/bin/qreview-dual.mjs question close --round <round_id>
   node DualEnd-Mac/bin/qreview-dual.mjs graph add-node --json request.json
-  node DualEnd-Mac/bin/qreview-dual.mjs graph snapshot [--graph <graph_id>]`);
+  node DualEnd-Mac/bin/qreview-dual.mjs graph snapshot [--graph <graph_id>]
+  node DualEnd-Mac/bin/qreview-dual.mjs custom create --json request.json
+  node DualEnd-Mac/bin/qreview-dual.mjs custom list [--query <标题或正文关键词>]
+  node DualEnd-Mac/bin/qreview-dual.mjs custom show --id <custom_id>
+  node DualEnd-Mac/bin/qreview-dual.mjs custom open --id <custom_id>`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

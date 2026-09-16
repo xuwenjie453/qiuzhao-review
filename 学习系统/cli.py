@@ -18,11 +18,15 @@
   python 学习系统/cli.py expand-materials [--limit N] [--verbose]
   python 学习系统/cli.py retrieve "查询词" [--level 2]
   python 学习系统/cli.py small-to-big --chunk CHUNK_ID
+  python 学习系统/cli.py user-graph-create --json FILE [--frequency high|medium|low]
+  python 学习系统/cli.py user-graph-due [--limit 1]
+  python 学习系统/cli.py user-graph-open --id CUSTOM_ID
+  python 学习系统/cli.py user-graph-complete --id CUSTOM_ID
 """
-import sys, os, json, argparse, datetime
+import sys, os, json, argparse, datetime, subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lsys import db, schema, goal_compiler, scheduler, engines, probe_compiler, review_engine, rebuilder, materials_rag  # noqa: E402
+from lsys import db, schema, goal_compiler, scheduler, engines, probe_compiler, review_engine, rebuilder, materials_rag, user_graph_scheduler  # noqa: E402
 
 
 def cmd_init(_):
@@ -168,6 +172,59 @@ def cmd_small_to_big(a):
                           'source': r['source'], 'content': r['content'][:300]}, ensure_ascii=False))
 
 
+def _dualend_custom(*args) -> dict:
+    cli = os.path.join(db.ROOT, 'DualEnd-Mac', 'bin', 'qreview-dual.mjs')
+    run = subprocess.run(['node', cli, 'custom', *args], cwd=db.ROOT, text=True,
+                         capture_output=True, check=False)
+    if run.returncode != 0:
+        raise RuntimeError(run.stderr.strip() or run.stdout.strip() or '自拟问题图命令失败')
+    try:
+        return json.loads(run.stdout)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f'自拟问题图返回无法解析: {run.stdout[:300]}') from e
+
+
+def cmd_user_graph_create(a):
+    """经 daemon 创建 canonical 图，再登记独立复习序列。"""
+    graph = _dualend_custom('create', '--json', os.path.abspath(a.json))
+    if graph.get('error'):
+        raise RuntimeError(json.dumps(graph, ensure_ascii=False))
+    schedule = user_graph_scheduler.register(graph['custom_id'], a.frequency)
+    print(json.dumps({'graph': graph, 'schedule': schedule}, ensure_ascii=False, indent=1))
+
+
+def cmd_user_graph_register(a):
+    print(json.dumps(user_graph_scheduler.register(a.id, a.frequency), ensure_ascii=False, indent=1))
+
+
+def cmd_user_graph_due(a):
+    now_dt = datetime.datetime.fromisoformat(a.now) if a.now else None
+    rows = user_graph_scheduler.list_schedules(due_only=True, now_dt=now_dt, limit=a.limit)
+    print(json.dumps({'items': rows}, ensure_ascii=False, indent=1))
+
+
+def cmd_user_graph_list(a):
+    rows = user_graph_scheduler.list_schedules(due_only=False, limit=a.limit)
+    print(json.dumps({'items': rows}, ensure_ascii=False, indent=1))
+
+
+def cmd_user_graph_open(a):
+    graph = _dualend_custom('open', '--id', a.id)
+    if graph.get('error'):
+        raise RuntimeError(json.dumps(graph, ensure_ascii=False))
+    shown = user_graph_scheduler.mark_shown(a.id)
+    print(json.dumps({'graph': graph, 'schedule': shown}, ensure_ascii=False, indent=1))
+
+
+def cmd_user_graph_complete(a):
+    now_dt = datetime.datetime.fromisoformat(a.at) if a.at else None
+    print(json.dumps(user_graph_scheduler.complete(a.id, now_dt=now_dt), ensure_ascii=False, indent=1))
+
+
+def cmd_user_graph_frequency(a):
+    print(json.dumps(user_graph_scheduler.set_frequency(a.id, a.frequency), ensure_ascii=False, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser(description='秋招智能学习与复习体系 V1')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -200,6 +257,13 @@ def main():
     p = sub.add_parser('retrieve'); p.add_argument('query'); p.add_argument('--top-k', type=int, default=8); p.add_argument('--level', type=int)
     p.set_defaults(func=cmd_retrieve)
     p = sub.add_parser('small-to-big'); p.add_argument('--chunk', required=True); p.set_defaults(func=cmd_small_to_big)
+    p = sub.add_parser('user-graph-create'); p.add_argument('--json', required=True); p.add_argument('--frequency', default='medium'); p.set_defaults(func=cmd_user_graph_create)
+    p = sub.add_parser('user-graph-register'); p.add_argument('--id', required=True); p.add_argument('--frequency', default='medium'); p.set_defaults(func=cmd_user_graph_register)
+    p = sub.add_parser('user-graph-due'); p.add_argument('--now'); p.add_argument('--limit', type=int, default=1); p.set_defaults(func=cmd_user_graph_due)
+    p = sub.add_parser('user-graph-list'); p.add_argument('--limit', type=int, default=50); p.set_defaults(func=cmd_user_graph_list)
+    p = sub.add_parser('user-graph-open'); p.add_argument('--id', required=True); p.set_defaults(func=cmd_user_graph_open)
+    p = sub.add_parser('user-graph-complete'); p.add_argument('--id', required=True); p.add_argument('--at'); p.set_defaults(func=cmd_user_graph_complete)
+    p = sub.add_parser('user-graph-frequency'); p.add_argument('--id', required=True); p.add_argument('--frequency', required=True); p.set_defaults(func=cmd_user_graph_frequency)
 
     a = ap.parse_args()
     a.func(a)
