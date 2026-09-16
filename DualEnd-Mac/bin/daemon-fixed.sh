@@ -7,17 +7,60 @@
 # StaticEndpoint.defaultPort 保持一致 —— 改这里必须同步改那里。
 #
 # 用法:
-#   daemon-fixed.sh start    启动（固定端口 + nohup 脱离 + 清理旧广播）
-#   daemon-fixed.sh stop     优雅停止（含孤儿 dns-sd 清理）
+#   daemon-fixed.sh start    通过 launchd 启动（固定端口 + 系统托管）
+#   daemon-fixed.sh stop     卸载 launchd 服务并优雅停止（含孤儿 dns-sd 清理）
 #   daemon-fixed.sh restart  重启
 #   daemon-fixed.sh status   状态
 set -o pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# 用物理路径写入 plist，避免旧 Documents 兼容符号链接再次触发 TCC 限制。
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 CLI=(node "${REPO_ROOT}/DualEnd-Mac/bin/qreview-dual.mjs")
 FIXED_PORT="${DUALEND_BRIDGE_PORT:-57689}"
 LOCK="${REPO_ROOT}/系统数据/dual-end/runtime/daemon.lock"
-LOG="${REPO_ROOT}/系统数据/dual-end/logs/daemon-stdout.log"
+LOG_DIR="${HOME}/Library/Logs/QiuZhaoReview"
+LOG="${LOG_DIR}/daemon-stdout.log"
+LABEL="local.qiuzhaoreview.daemon"
+USER_UID="$(id -u)"
+LAUNCH_DIR="${HOME}/Library/LaunchAgents"
+PLIST="${LAUNCH_DIR}/${LABEL}.plist"
+TEMPLATE="${REPO_ROOT}/DualEnd-Mac/launchd/${LABEL}.plist.in"
+
+launch_domain() { echo "gui/${USER_UID}"; }
+
+launch_loaded() {
+  launchctl print "$(launch_domain)/${LABEL}" >/dev/null 2>&1
+}
+
+xml_escape_replacement() {
+  # sed replacement 中的 & 和 | 必须转义；仓库路径与 node 路径都可能包含空格。
+  printf '%s' "$1" | sed 's/[&|]/\\&/g'
+}
+
+install_launch_agent() {
+  local escaped_root escaped_home temporary
+  command -v node >/dev/null || { echo "未找到 node，无法安装 launchd 服务" >&2; return 1; }
+  [ -f "${TEMPLATE}" ] || { echo "缺少 launchd 模板: ${TEMPLATE}" >&2; return 1; }
+  mkdir -p "${LAUNCH_DIR}" "${LOG_DIR}"
+  escaped_root="$(xml_escape_replacement "${REPO_ROOT}")"
+  escaped_home="$(xml_escape_replacement "${HOME}")"
+  temporary="${PLIST}.tmp.$$"
+  sed -e "s|__REPO_ROOT__|${escaped_root}|g" -e "s|__HOME_DIR__|${escaped_home}|g" "${TEMPLATE}" > "${temporary}"
+  if ! plutil -lint "${temporary}" >/dev/null; then
+    rm -f "${temporary}"
+    echo "生成的 launchd plist 无效" >&2
+    return 1
+  fi
+  install -m 644 "${temporary}" "${PLIST}"
+  rm -f "${temporary}"
+  chmod 755 "${REPO_ROOT}/DualEnd-Mac/bin/daemon-launchd.sh"
+}
+
+stop_launch_agent() {
+  if launch_loaded; then
+    launchctl bootout "$(launch_domain)/${LABEL}" >/dev/null 2>&1 || return 1
+  fi
+}
 
 running_pid() {
   [ -f "${LOCK}" ] || return 1
@@ -45,14 +88,17 @@ case "${1:-status}" in
     fi
     cleanup_orphans
     rm -f "${LOCK}"
-    mkdir -p "$(dirname "${LOG}")"
-    DUALEND_BRIDGE_PORT="${FIXED_PORT}" nohup "${CLI[@]}" daemon start >> "${LOG}" 2>&1 &
-    disown 2>/dev/null || true
-    echo "daemon 启动中 固定端口=${FIXED_PORT} 日志=${LOG}"
+    install_launch_agent
+    # stale service 可能来自一次中断的 bootstrap；先卸载同 label 再加载最新 plist。
+    stop_launch_agent || true
+    launchctl bootstrap "$(launch_domain)" "${PLIST}"
+    launchctl kickstart -k "$(launch_domain)/${LABEL}"
+    echo "daemon 由 launchd 启动 固定端口=${FIXED_PORT} label=${LABEL} 日志=${LOG}"
     sleep 4
     "${CLI[@]}" daemon status
     ;;
   stop)
+    stop_launch_agent || true
     if P=$(running_pid); then
       kill -TERM "${P}" 2>/dev/null && echo "已发送 SIGTERM 优雅停止 pid=${P}"
       sleep 2

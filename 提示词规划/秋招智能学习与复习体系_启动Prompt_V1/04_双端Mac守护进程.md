@@ -21,8 +21,8 @@
 ## 二、启动与状态（一律用固定端口脚本）
 
 ```bash
-./DualEnd-Mac/bin/daemon-fixed.sh start     # 固定端口 57689 启动（nohup 脱离 + 清理孤儿广播）
-./DualEnd-Mac/bin/daemon-fixed.sh stop      # 优雅停止（SIGTERM + 清理孤儿 dns-sd）
+./DualEnd-Mac/bin/daemon-fixed.sh start     # 固定端口 57689 启动（launchd 用户服务 + 清理孤儿广播）
+./DualEnd-Mac/bin/daemon-fixed.sh stop      # 卸载 launchd 服务并优雅停止（SIGTERM + 清理孤儿 dns-sd）
 ./DualEnd-Mac/bin/daemon-fixed.sh restart   # 重启
 ./DualEnd-Mac/bin/daemon-fixed.sh status    # 状态
 ```
