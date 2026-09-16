@@ -11,6 +11,6 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "test": "node --test test/graph.test.mjs test/bridge-e2e.test.mjs test/fixtures.test.mjs test/idempotency.test.mjs test/shape.test.mjs test/material.test.mjs"
+    "test": "node --test test/graph.test.mjs test/bridge-e2e.test.mjs test/fixtures.test.mjs test/idempotency.test.mjs test/shape.test.mjs test/material.test.mjs test/pace-goal-bridge.test.mjs"
   }
 }

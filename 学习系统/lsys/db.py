@@ -34,6 +34,8 @@ def connect(path: str, init: bool = False) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
+    # 守护进程的步频通知与会话 CLI 可能恰好同时写 scheduler；短暂等待比丢失真实进度更安全。
+    conn.execute('PRAGMA busy_timeout = 5000')
     if init:
         ddl = ALL[os.path.relpath(path, ROOT).replace(os.sep, '/')]
         conn.executescript(ddl)

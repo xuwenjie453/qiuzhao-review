@@ -4,6 +4,7 @@
 import { EventEmitter } from 'node:events';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { StateDb } from './store/state-db.mjs';
 import { QuestionGraphService } from './graph/question-graph-service.mjs';
@@ -12,11 +13,12 @@ import { WsServer } from './bridge/ws-server.mjs';
 import { SyncSession } from './bridge/sync-session.mjs';
 import { BonjourAdvertiser } from './bridge/bonjour.mjs';
 import { stableId } from './util.mjs';
+import { PaceGoalAutoRecorder, PaceGoalNotifier } from './pace/pace-goal-bridge.mjs';
 
 const EMPTY_LOGGER = { info() {}, warn() {}, error() {} };
 
 export class Daemon extends EventEmitter {
-  constructor({ dataDir, logger }) {
+  constructor({ dataDir, logger, paceGoalsEnabled = true, repoRoot = null }) {
     super();
     this.dataDir = dataDir;
     this.log = logger ?? EMPTY_LOGGER;
@@ -32,6 +34,10 @@ export class Daemon extends EventEmitter {
     this.controlPort = null;
     this.bridgePort = null;
     this.daemonId = null;
+    this.paceGoalsEnabled = paceGoalsEnabled;
+    this.repoRoot = repoRoot;
+    this.paceAutoRecorder = null;
+    this.paceNotifier = null;
   }
 
   // ---- 单实例锁 ----
@@ -63,6 +69,12 @@ export class Daemon extends EventEmitter {
     this.daemonId = stableId(dbPath).slice(0, 12);
     this.store = new StateDb(dbPath);
     this.svc = new QuestionGraphService(this.store);
+    // daemon.mjs 位于 <repo>/DualEnd-Mac/src；不依赖可变的工作目录或 dataDir 推导根路径。
+    const repoRoot = this.repoRoot ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+    if (this.paceGoalsEnabled) {
+      this.paceAutoRecorder = new PaceGoalAutoRecorder({ repoRoot, logger: this.log });
+      this.paceNotifier = new PaceGoalNotifier({ repoRoot, logger: this.log });
+    }
     this.log.info?.('store opened');
     const ic = this.store.integrity();
     if (ic.integrity !== 'ok' || ic.fk_violations > 0) {
@@ -107,6 +119,7 @@ export class Daemon extends EventEmitter {
     this.bonjour = new BonjourAdvertiser({ daemonId: this.daemonId, port: this.bridgePort, logger: this.log });
     this.bonjour.start();
     this.state = 'READY';
+    this.paceNotifier?.start();
     this.log.info?.(`READY control=127.0.0.1:${this.controlPort} bridge=:${this.bridgePort} daemon_id=${this.daemonId}`);
     this.emit('state', this.state);
     this.emit('ready', { controlPort: this.controlPort, bridgePort: this.bridgePort, daemonId: this.daemonId });
@@ -138,6 +151,11 @@ export class Daemon extends EventEmitter {
         result = svc.setInheritance(payload); break;
       default:
         return { error: 'UNKNOWN_KIND' };
+    }
+    if (result?.kind === 'EXPLANATION' && result.node_id) {
+      // 图节点已经 canonical commit；步频记录失败不阻断学习，只记诊断日志。
+      try { this.paceAutoRecorder?.recordExplanationNode(svc.nodeGet(result.node_id)); }
+      catch (error) { this.log.warn?.(`pace auto recorder error: ${error.message}`); }
     }
     if (result && result.graph_id) this.broadcastGraphChange(result.graph_id, result);
     return result;
@@ -202,6 +220,7 @@ export class Daemon extends EventEmitter {
     this.state = 'STOPPING';
     this.emit('state', this.state);
     this.bonjour?.stop();
+    this.paceNotifier?.stop();
     for (const s of this.sessions) s.close('daemon stop');
     this.ws?.close?.();
     await new Promise((r) => { try { this.http?.close?.(r); } catch { r(); } });

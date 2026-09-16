@@ -28,7 +28,7 @@ const openQuestion = (qk = 'qb:Redis-01-003') => localCommand({
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'dualend-e2e-'));
-  daemon = new Daemon({ dataDir: join(dir, 'data'), logger: NOLOG });
+  daemon = new Daemon({ dataDir: join(dir, 'data'), logger: NOLOG, paceGoalsEnabled: false });
   await daemon.start();
   controlPort = daemon.controlPort;
   bridgePort = daemon.bridgePort;

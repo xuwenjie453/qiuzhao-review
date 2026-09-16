@@ -164,7 +164,7 @@ describe('SET_NODE_SHAPE over CLIENT_COMMAND (iPad 路径端到端)', () => {
   let dir2, daemon, client;
   before(async () => {
     dir2 = mkdtempSync(join(tmpdir(), 'dualend-shape-ws-'));
-    daemon = new Daemon({ dataDir: join(dir2, 'data'), logger: { info() {}, warn() {}, error() {} } });
+    daemon = new Daemon({ dataDir: join(dir2, 'data'), logger: { info() {}, warn() {}, error() {} }, paceGoalsEnabled: false });
     await daemon.start();
     client = new WsTestClient();
     await client.connect(daemon.bridgePort);

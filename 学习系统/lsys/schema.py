@@ -3,7 +3,11 @@
 哲学: Events are facts. States are projections.
 物理边界(架构冻结): scheduler 在根目录; 三引擎库在各自目录; materials 在资料库; questions 只属于试题库。
 """
-SCHEMA_VERSION = "1.2"
+from pathlib import Path
+
+SCHEMA_VERSION = "1.3"
+
+PACE_SQL = Path(__file__).with_name("pace_schema.sql").read_text(encoding="utf-8")
 
 # ---------- scheduler.sqlite3 ----------
 SCHEDULER_SQL = """
@@ -97,7 +101,7 @@ CREATE TABLE IF NOT EXISTS user_graph_review_events (
     payload_json    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ugre_graph_time ON user_graph_review_events(custom_id, occurred_at);
-"""
+""" + PACE_SQL
 
 # ---------- 三引擎共用形态 ----------
 # knowledge: knowledge_nodes/node_relations/learning_events/knowledge_states/review_capsules

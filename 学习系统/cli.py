@@ -22,11 +22,14 @@
   python 学习系统/cli.py user-graph-due [--limit 1]
   python 学习系统/cli.py user-graph-open --id CUSTOM_ID
   python 学习系统/cli.py user-graph-complete --id CUSTOM_ID
+  python 学习系统/cli.py pace-goal-create --json FILE
+  python 学习系统/cli.py pace-goal-progress --id GOAL_ID --increment N
+  python 学习系统/cli.py pace-goal-notify --due
 """
 import sys, os, json, argparse, datetime, subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lsys import db, schema, goal_compiler, scheduler, engines, probe_compiler, review_engine, rebuilder, materials_rag, user_graph_scheduler  # noqa: E402
+from lsys import db, schema, goal_compiler, scheduler, engines, probe_compiler, review_engine, rebuilder, materials_rag, user_graph_scheduler, pace_goals  # noqa: E402
 
 
 def cmd_init(_):
@@ -134,6 +137,9 @@ def cmd_status(_):
     caps = conn.execute("SELECT count(*) n FROM review_schedule WHERE active=1").fetchone()['n']
     print(f'== Review == capsules={caps}, due-now={due} (due 仅为候选, 非 Due Queue)')
     conn.close()
+    pace = pace_goals.PaceGoalService()
+    active_pace = pace.list(status='ACTIVE')
+    print(f'== Pace Goals == active={len(active_pace)} (每日事实，不跨日追债)')
     for eng, path in db.ENGINE_DBS.items():
         c = db.connect(path)
         st, tbl = db.STATES_TABLE[eng], db.NODES_TABLE[eng]
@@ -225,6 +231,75 @@ def cmd_user_graph_frequency(a):
     print(json.dumps(user_graph_scheduler.set_frequency(a.id, a.frequency), ensure_ascii=False, indent=1))
 
 
+def _load_json_file(path: str) -> dict:
+    with open(path, encoding='utf-8') as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, dict):
+        raise ValueError('JSON 文件必须是对象')
+    return payload
+
+
+def cmd_pace_goal_create(a):
+    result = pace_goals.PaceGoalService().create(_load_json_file(a.json), now_dt=a.at)
+    print(json.dumps(result, ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_update(a):
+    result = pace_goals.PaceGoalService().update(a.id, _load_json_file(a.json), now_dt=a.at)
+    print(json.dumps(result, ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_status(a):
+    result = pace_goals.PaceGoalService().set_status(a.id, a.status, now_dt=a.at)
+    print(json.dumps(result, ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_progress(a):
+    result = pace_goals.PaceGoalService().increment_manual(a.id, a.increment, occurred_at=a.at, note=a.note)
+    print(json.dumps(result, ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_auto(a):
+    payload = json.loads(a.payload) if a.payload else None
+    result = pace_goals.PaceGoalService().record_auto(
+        a.detector, a.source_ref, a.increment, occurred_at=a.at, payload=payload)
+    print(json.dumps({'items': result}, ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_list(a):
+    print(json.dumps({'items': pace_goals.PaceGoalService().list(status=a.status)}, ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_daily(a):
+    print(json.dumps(pace_goals.PaceGoalService().daily(a.id, local_date=a.date), ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_summary(a):
+    service = pace_goals.PaceGoalService()
+    print(json.dumps({'date': a.date or db.today(), 'items': service.summary(a.date)}, ensure_ascii=False, indent=1))
+
+
+def cmd_pace_goal_notify(a):
+    service = pace_goals.PaceGoalService()
+    if a.due:
+        if a.dry_run:
+            now = a.at or datetime.datetime.now(pace_goals.PACE_TIME_ZONE).isoformat(timespec='seconds')
+            slot = service.due_slot(now)
+            probe = service.render_notification(slot, now) if slot else {
+                'sent': False, 'reason': 'NOT_DUE', 'local_date': now[:10],
+            }
+            print(json.dumps(probe, ensure_ascii=False, indent=1))
+        else:
+            print(json.dumps(service.send_due(a.at), ensure_ascii=False, indent=1))
+        return
+    if not a.slot:
+        raise ValueError('pace-goal-notify 需要 --slot 或 --due')
+    if a.dry_run:
+        print(json.dumps(service.render_notification(a.slot, a.at), ensure_ascii=False, indent=1))
+    else:
+        print(json.dumps(service.send_notification(a.slot, a.at), ensure_ascii=False, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser(description='秋招智能学习与复习体系 V1')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -264,6 +339,15 @@ def main():
     p = sub.add_parser('user-graph-open'); p.add_argument('--id', required=True); p.set_defaults(func=cmd_user_graph_open)
     p = sub.add_parser('user-graph-complete'); p.add_argument('--id', required=True); p.add_argument('--at'); p.set_defaults(func=cmd_user_graph_complete)
     p = sub.add_parser('user-graph-frequency'); p.add_argument('--id', required=True); p.add_argument('--frequency', required=True); p.set_defaults(func=cmd_user_graph_frequency)
+    p = sub.add_parser('pace-goal-create'); p.add_argument('--json', required=True); p.add_argument('--at'); p.set_defaults(func=cmd_pace_goal_create)
+    p = sub.add_parser('pace-goal-update'); p.add_argument('--id', required=True); p.add_argument('--json', required=True); p.add_argument('--at'); p.set_defaults(func=cmd_pace_goal_update)
+    p = sub.add_parser('pace-goal-status'); p.add_argument('--id', required=True); p.add_argument('--status', required=True, choices=['active', 'paused']); p.add_argument('--at'); p.set_defaults(func=cmd_pace_goal_status)
+    p = sub.add_parser('pace-goal-progress'); p.add_argument('--id', required=True); p.add_argument('--increment', type=int, default=1); p.add_argument('--note'); p.add_argument('--at'); p.set_defaults(func=cmd_pace_goal_progress)
+    p = sub.add_parser('pace-goal-record-auto'); p.add_argument('--detector', required=True); p.add_argument('--source-ref', required=True); p.add_argument('--increment', type=int, default=1); p.add_argument('--payload'); p.add_argument('--at'); p.set_defaults(func=cmd_pace_goal_auto)
+    p = sub.add_parser('pace-goal-list'); p.add_argument('--status', choices=['ACTIVE', 'PAUSED', 'COMPLETED']); p.set_defaults(func=cmd_pace_goal_list)
+    p = sub.add_parser('pace-goal-daily'); p.add_argument('--id', required=True); p.add_argument('--date'); p.set_defaults(func=cmd_pace_goal_daily)
+    p = sub.add_parser('pace-goal-summary'); p.add_argument('--date'); p.set_defaults(func=cmd_pace_goal_summary)
+    p = sub.add_parser('pace-goal-notify'); p.add_argument('--slot', choices=['MORNING', 'AFTERNOON', 'EVENING', 'NIGHT']); p.add_argument('--due', action='store_true'); p.add_argument('--dry-run', action='store_true'); p.add_argument('--at'); p.set_defaults(func=cmd_pace_goal_notify)
 
     a = ap.parse_args()
     a.func(a)

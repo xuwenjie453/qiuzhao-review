@@ -12,6 +12,19 @@ python3 学习系统/cli.py bootstrap     # 首个 Goal: 25-Day Autumn Recruitme
 python3 学习系统/cli.py task          # 下一项 TaskIntent(LEARN/REVIEW/REPAIR)
 ```
 
+## 步频目标（PaceGoal）
+
+PaceGoal 用于“每天稳定推进 N 个明确单位”，独立于 Deadline Goal 和 Review 调度。它记录事实、按早中晚显示节奏、不会把未完成量结转为明日欠账。
+
+```bash
+python3 学习系统/cli.py pace-goal-create --json /tmp/pace-goal.json
+python3 学习系统/cli.py pace-goal-list --status ACTIVE
+python3 学习系统/cli.py pace-goal-progress --id <goal_id> --increment 5
+python3 学习系统/cli.py pace-goal-summary
+```
+
+AUTO 目标可监听 `EXPLANATION_NODE_CREATED`；守护进程在成功创建解释节点后自动、幂等地加一。守护进程常驻时会在 09:00、13:00、19:00、22:30 向 Mac 通知中心推送一条聚合进度报告。完整运行规则见 RuntimePrompt `22_步频目标系统协议.md`。
+
 ## 数据层(物理边界, 架构冻结)
 
 ```text

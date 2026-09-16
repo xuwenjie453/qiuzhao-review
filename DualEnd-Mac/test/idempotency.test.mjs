@@ -69,7 +69,7 @@ let dir, daemon, controlPort, bridgePort, client;
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'dualend-idem-e2e-'));
-  daemon = new Daemon({ dataDir: join(dir, 'data'), logger: NOLOG });
+  daemon = new Daemon({ dataDir: join(dir, 'data'), logger: NOLOG, paceGoalsEnabled: false });
   await daemon.start();
   controlPort = daemon.controlPort;
   bridgePort = daemon.bridgePort;
