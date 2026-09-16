@@ -9,6 +9,7 @@
 | TaskIntent 选中正式题并开始教学/诊断（LEARN/REPAIR） | `question.open` |
 | Review Capsule 生成具体 retrieval probe 并开始作答 | `question.open`（以 capsule/probe identity；有明确主来源时声明 `inherit_from`） |
 | 用户**明确**要某段解释入图 | `graph.add-node` |
+| 用户明确解析/抽取某个现有节点的部分内容，并作为子节点入图 | 读取父节点正文后用 `graph.add-node`，传 `parent_node_id` |
 | 本题结束 / 切换到下一题 | `question.close` |
 | 用户明确要创建自拟问题图 | `custom create` |
 | 用户要查看/重开自拟问题图 | `custom list/show/open` |
@@ -16,17 +17,18 @@
 ## 二、硬性规则（违反即失信）
 
 1. **解释不自动入图**：Agent 的普通回答不产生任何节点。只有用户明确表达"把刚才这段/这个解释加入问题图"时才能调用 `graph.add-node`。
-2. **body 用原解释原文**：`body_markdown` 必须是用户指中的那段 assistant 原文，禁止"整理改写"。
-3. **title 可概括**：由 Agent 生成，建议 4–18 个中文字符。
-4. **daemon 不在线不阻断学习**：命令失败时告知"iPad 同步暂不可用"，继续正常学习与事件落库；禁止伪造"节点已加入"。
-5. 命令幂等：每次命令带新 `command_id`（UUID）。
-6. 正式 LEARN/REPAIR 继续以 `QUESTION_BANK` 开题；Review 继续以 `REVIEW_CAPSULE` 开题。若 Capsule 有明确 `primary_source_question_id`，Agent 在 `question.open` 中声明对应的 `inherit_from`（`QUESTION_BANK` / `qb:<question_id>`）。
-7. Agent 禁止读取 parent Explanation 后逐个 `graph.add-node` 复制到 Review 图；继承节点由 GraphService effective view 决定。
-8. Review 中对 inherited Explanation 的 rename/move/Ink 作用于共享 canonical node；删除 inherited node 按 global shared delete 理解，iPad 负责最终明确确认。
-9. parent graph 缺失不阻塞当前 Review；不伪造历史 Explanation。Review 自己新增的 Explanation 只归当前 Review 图，不回写原题图。
-10. **自拟图永久登记**：用户明确提出自拟问题时，以 `USER_AUTHORED` 来源创建，系统生成唯一 `custom_id`；不得伪装成正式题、不得写入 `questions.sqlite3`。以后按 ID、标题或正文关键词检索并重新打开同一张图，保留其布局、解释节点与笔迹。
-11. **自拟图独立调度**：创建时必须登记 HIGH/MEDIUM/LOW 之一；用户未说明时默认 MEDIUM。时序写入根 `scheduler.sqlite3` 的独立表，不进入正式 `review_schedule`，也不生成 Review Capsule。
-12. **完成边界**：`user-graph-open` 只记录 `REVIEW_SHOWN`，绝不推进周期；只有用户明确说“看完了/完成复习”才记录 `REVIEW_COMPLETED` 并计算下一次到期。到期只是候选，一次只呈现一张，用户跳过时保持原到期状态。
+2. **普通加入时 body 用原解释原文**：用户说“把刚才这段解释加入图”时，`body_markdown` 必须是所指 assistant 原文，禁止"整理改写"。
+3. **解析节点例外（范围严格）**：仅当用户明确要求“解析/抽取某个现有节点中的某主题，并作为子节点加入图”时，Agent 才能读取该父节点正文，跨段收集、压缩和重组为自包含解释；不得修改父正文，也不得把父节点之外的新知识伪装成抽取结果。新节点仍是 `EXPLANATION`，并传 `parent_node_id=<父节点>`。普通“展开讲讲/总结一下”不自动触发此例外。
+4. **title 可概括**：由 Agent 生成，建议 4–18 个中文字符。
+5. **daemon 不在线不阻断学习**：命令失败时告知"iPad 同步暂不可用"，继续正常学习与事件落库；禁止伪造"节点已加入"。
+6. 命令幂等：每次命令带新 `command_id`（UUID）。
+7. 正式 LEARN/REPAIR 继续以 `QUESTION_BANK` 开题；Review 继续以 `REVIEW_CAPSULE` 开题。若 Capsule 有明确 `primary_source_question_id`，Agent 在 `question.open` 中声明对应的 `inherit_from`（`QUESTION_BANK` / `qb:<question_id>`）。
+8. Agent 禁止读取 parent Explanation 后逐个 `graph.add-node` 复制到 Review 图；继承节点由 GraphService effective view 决定。
+9. Review 中对 inherited Explanation 的 rename/move/Ink 作用于共享 canonical node；删除 inherited node 按 global shared delete 理解，iPad 负责最终明确确认。
+10. parent graph 缺失不阻塞当前 Review；不伪造历史 Explanation。Review 自己新增的 Explanation 只归当前 Review 图，不回写原题图；inherited 节点不能作为当前图 OWN 子节点的 parent。
+11. **自拟图永久登记**：用户明确提出自拟问题时，以 `USER_AUTHORED` 来源创建，系统生成唯一 `custom_id`；不得伪装成正式题、不得写入 `questions.sqlite3`。以后按 ID、标题或正文关键词检索并重新打开同一张图，保留其布局、解释节点与笔迹。
+12. **自拟图独立调度**：创建时必须登记 HIGH/MEDIUM/LOW 之一；用户未说明时默认 MEDIUM。时序写入根 `scheduler.sqlite3` 的独立表，不进入正式 `review_schedule`，也不生成 Review Capsule。
+13. **完成边界**：`user-graph-open` 只记录 `REVIEW_SHOWN`，绝不推进周期；只有用户明确说“看完了/完成复习”才记录 `REVIEW_COMPLETED` 并计算下一次到期。到期只是候选，一次只呈现一张，用户跳过时保持原到期状态。
 
 ## 三、自拟图周期序列
 
@@ -62,7 +64,8 @@ node DualEnd-Mac/bin/qreview-dual.mjs question open --json /tmp/open.json
 node DualEnd-Mac/bin/qreview-dual.mjs graph add-node --json /tmp/add.json
 # add.json:
 # { "round_id": "<open 返回>", "node_kind": "EXPLANATION",  // 或 TEMPORARY(仅本轮可见)
-#   "ai_title": "...", "body_markdown": "<解释原文>" }
+#   "parent_node_id": "<可选；未传默认 CENTER，TEMPORARY 不可自定义>",
+#   "ai_title": "...", "body_markdown": "<解释原文或明确解析后的子解释>" }
 
 # 结束本题
 node DualEnd-Mac/bin/qreview-dual.mjs question close --round <round_id>
@@ -90,8 +93,8 @@ node DualEnd-Mac/bin/qreview-dual.mjs custom open --id <custom_id>
 | kind | 形状 | 生命周期 | 说明 |
 |---|---|---|---|
 | `CENTER` | 正方 | 永久 | 问题正文快照；title 可改；不可删 |
-| `EXPLANATION` | 圆 | 永久 | 用户选中的 AI 解释原文；不可改 body |
-| `TEMPORARY` | 三角 | 仅当前轮次 | 用户显式加；`question.close` 后自动移出，下轮不复活 |
+| `EXPLANATION` | 圆 | 永久 | 默认连 CENTER；也可在创建时连同图的 CENTER/EXPLANATION 父节点；不可改 body |
+| `TEMPORARY` | 三角 | 仅当前轮次 | 固定连 CENTER；用户显式加；`question.close` 后自动移出，下轮不复活 |
 
 iPad 端只能：拖动布局、改 title、删除非 CENTER 节点、Apple Pencil 手写（ink 按 `node_id` 永久绑定）。**iPad 不参与 Agent 对话、不能改正文。**
 
