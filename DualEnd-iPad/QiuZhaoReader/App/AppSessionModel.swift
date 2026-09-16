@@ -171,10 +171,12 @@ final class AppSessionModel: ObservableObject {
             graphState.dragTransient[nodeId] = nil
         }
         guard let snap = graphState.snapshot,
-              let node = snap.nodes.first(where: { $0.nodeId == nodeId }) else { return }
+              let node = snap.nodes.first(where: { $0.nodeId == nodeId }),
+              let layout = node.layout else { return }
         Task {
             let commandId = await store.localMove(nodeId: nodeId, x: Double(pos.x), y: Double(pos.y),
-                                                  baseLayoutRevision: node.layout.revision)
+                                                  baseLayoutRevision: layout.revision)
+            guard !commandId.isEmpty else { return }
             await MainActor.run {
                 self.pendingMoveCommands[commandId] = nodeId
             }
@@ -199,15 +201,22 @@ final class AppSessionModel: ObservableObject {
         }
         graphState.managedNodeId = nil
     }
-    /// v6: shape 修改 —— 任意节点（含 CENTER）可选任意形状；本地乐观更新随后走 outbox 重放。
+    /// v6: shape 修改 —— topology 节点（含 CENTER）可选任意形状；MATERIAL 没有 shape。
     func setShape(nodeId: String, shape: NodeShape) {
         guard let snap = graphState.snapshot,
-              let node = snap.nodes.first(where: { $0.nodeId == nodeId }) else { return }
+              let node = snap.nodes.first(where: { $0.nodeId == nodeId }), !node.isMaterial else { return }
         Task {
             await store.localSetShape(nodeId: nodeId, shape: shape, baseNodeRevision: node.nodeRevision)
             sync.pushLocalMutation()
         }
         graphState.managedNodeId = nil
+    }
+    func toggleMaterialSidebar() {
+        guard graphState.snapshot?.isUserAuthored == true else {
+            graphState.materialSidebarVisible = false
+            return
+        }
+        graphState.materialSidebarVisible.toggle()
     }
     func didEnterReader(nodeId: String) { /* ink flush 生命周期由 ReaderHost 处理 */ }
 
@@ -221,15 +230,18 @@ final class AppSessionModel: ObservableObject {
         next.readerRoute = graphState.readerRoute
         next.dragTransient = graphState.dragTransient
         next.pendingPositions = graphState.pendingPositions
+        next.materialSidebarVisible = incoming.snapshot?.isUserAuthored == true
+            ? graphState.materialSidebarVisible : false
 
         // A pending move is complete only when the canonical graph contains
         // the same world coordinate. Older snapshots must not make the
         // node jump back during the ACK/patch gap.
         if let snapshot = incoming.snapshot {
             for (nodeId, pending) in graphState.pendingPositions {
-                guard let node = snapshot.nodes.first(where: { $0.nodeId == nodeId }) else { continue }
-                let dx = abs(node.layout.x - Double(pending.x))
-                let dy = abs(node.layout.y - Double(pending.y))
+                guard let node = snapshot.nodes.first(where: { $0.nodeId == nodeId }),
+                      let layout = node.layout else { continue }
+                let dx = abs(layout.x - Double(pending.x))
+                let dy = abs(layout.y - Double(pending.y))
                 if dx < 0.0005 && dy < 0.0005 {
                     next.pendingPositions[nodeId] = nil
                     pendingMoveCommands = pendingMoveCommands.filter { $0.value != nodeId }
@@ -286,13 +298,23 @@ struct RootView: View {
         NavigationStack {
             GeometryReader { geo in
                 ZStack(alignment: .bottom) {
-                    QuestionGraphView(state: model.graphState,
-                                      containerSize: geo.size,
-                                      onNodeTap: { model.nodeTapped($0) },
-                                      onNodeDoubleTap: { model.nodeDoubleTapped($0) },
-                                      onBackgroundTap: { model.backgroundTapped() },
-                                      onNodeDragChanged: { model.nodeDragged($0, to: $1) },
-                                      onNodeDragEnded: { model.nodeDragEnded($0, at: $1) })
+                    HStack(spacing: 0) {
+                        if showsMaterialSidebar {
+                            MaterialSidebarView(materials: model.graphState.snapshot?.materialNodes ?? [],
+                                                onClose: { model.toggleMaterialSidebar() },
+                                                onTap: { model.nodeTapped($0) },
+                                                onDoubleTap: { model.nodeDoubleTapped($0) })
+                                .frame(width: materialSidebarWidth(for: geo.size))
+                                .transition(.move(edge: .leading).combined(with: .opacity))
+                        }
+                        QuestionGraphView(state: model.graphState,
+                                          containerSize: CGSize(width: geo.size.width - (showsMaterialSidebar ? materialSidebarWidth(for: geo.size) : 0), height: geo.size.height),
+                                          onNodeTap: { model.nodeTapped($0) },
+                                          onNodeDoubleTap: { model.nodeDoubleTapped($0) },
+                                          onBackgroundTap: { model.backgroundTapped() },
+                                          onNodeDragChanged: { model.nodeDragged($0, to: $1) },
+                                          onNodeDragEnded: { model.nodeDragEnded($0, at: $1) })
+                    }
                     if let err = model.lastError {
                         Text(err).font(.footnote).foregroundColor(.white)
                             .padding(8).background(Color.red.opacity(0.9)).cornerRadius(8)
@@ -303,7 +325,17 @@ struct RootView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("问题图")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { badgeView } }
+            .toolbar {
+                if model.graphState.snapshot?.isUserAuthored == true {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: { model.toggleMaterialSidebar() }) {
+                            Image(systemName: "book.closed")
+                        }
+                        .accessibilityLabel("资料")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) { badgeView }
+            }
             .sheet(item: Binding(
                 get: { model.graphState.managedNodeId.map(NodeSheetRoute.init) },
                 set: { if $0 == nil { model.graphState.managedNodeId = nil } }
@@ -350,10 +382,74 @@ struct RootView: View {
     private func currentNode(_ id: String) -> GraphNodeDTO? {
         model.graphState.snapshot?.nodes.first { $0.nodeId == id }
     }
+
+    private var showsMaterialSidebar: Bool {
+        model.graphState.snapshot?.isUserAuthored == true && model.graphState.materialSidebarVisible
+    }
+
+    private func materialSidebarWidth(for size: CGSize) -> CGFloat {
+        min(340, max(240, size.width * 0.30))
+    }
 }
 
 struct NodeSheetRoute: Identifiable { let nodeId: String; var id: String { nodeId } }
 struct ReaderRoute: Identifiable { let nodeId: String; var id: String { nodeId } }
+
+/// `MATERIAL` 的 Graph 内目录投影；它和 Canvas 共用同一份 canonical snapshot，
+/// 不另建同步或阅读数据模型。
+struct MaterialSidebarView: View {
+    let materials: [GraphNodeDTO]
+    let onClose: () -> Void
+    let onTap: (String) -> Void
+    let onDoubleTap: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("资料", systemImage: "book.closed")
+                    .font(.headline)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "sidebar.left")
+                }
+                .accessibilityLabel("收起资料侧边栏")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            Divider()
+            if materials.isEmpty {
+                ContentUnavailableView("暂无资料", systemImage: "doc.text",
+                                       description: Text("在 Mac 端将文本或 Markdown 加入此自制问题图。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 16)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(materials) { material in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(material.title)
+                                    .font(.body.weight(.medium))
+                                    .lineLimit(2)
+                                Text("Markdown · 原始资料")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(TapGesture(count: 2).onEnded { onDoubleTap(material.nodeId) })
+                            .onTapGesture { onTap(material.nodeId) }
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+}
 
 // MARK: - 首次启动权限说明 (M-7.4): 先说明用途再触发系统 Local Network 权限
 struct FirstLaunchPermissionView: View {
@@ -393,10 +489,11 @@ struct NodeManageSheet: View {
                     TextField("节点标题", text: $title)
                         .onAppear { title = node.title; selectedShape = node.resolvedShape }
                 }
-                Section("形状") {
+                if !node.isMaterial {
+                    Section("形状") {
                     // 任意节点（含 CENTER）可选任意形状；shape 与 kind 相互独立。
                     Picker("形状", selection: Binding(
-                        get: { selectedShape ?? node.resolvedShape },
+                        get: { selectedShape ?? node.resolvedShape ?? .SQUARE },
                         set: { selectedShape = $0 }
                     )) {
                         Text("□ 方形").tag(NodeShape.SQUARE)
@@ -404,13 +501,14 @@ struct NodeManageSheet: View {
                         Text("△ 三角形").tag(NodeShape.TRIANGLE)
                     }
                     .pickerStyle(.segmented)
+                    }
                 }
                 Section {
                     HStack { Text("类型"); Spacer(); Text(kindName).foregroundColor(.secondary) }
                     HStack {
                         Text("状态")
                         Spacer()
-                        Text(node.isCenter ? "永久 · 题目中心" : (node.kind == .TEMPORARY ? "本轮临时" : "永久"))
+                        Text(node.isMaterial ? "永久 · 原始资料" : (node.isCenter ? "永久 · 题目中心" : (node.kind == .TEMPORARY ? "本轮临时" : "永久")))
                             .foregroundColor(.secondary)
                     }
                 }
@@ -426,7 +524,7 @@ struct NodeManageSheet: View {
                     Button("保存") {
                         let t = title.trimmingCharacters(in: .whitespaces)
                         if !t.isEmpty && t != node.title { onRename(t) }
-                        if let s = selectedShape, s != node.resolvedShape { onSetShape(s) }
+                        if !node.isMaterial, let s = selectedShape, s != node.resolvedShape { onSetShape(s) }
                         dismiss()
                     }
                 }
@@ -451,6 +549,7 @@ struct NodeManageSheet: View {
         case .CENTER: return "CENTER · 题目中心"
         case .EXPLANATION: return "EXPLANATION · 解释"
         case .TEMPORARY: return "TEMPORARY · 本轮临时"
+        case .MATERIAL: return "MATERIAL · 原始资料"
         }
     }
 }

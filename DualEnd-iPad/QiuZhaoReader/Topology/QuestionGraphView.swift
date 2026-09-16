@@ -13,7 +13,7 @@ enum TopologyLayout {
     }
 }
 
-/// 节点视觉形状 —— 只由 canonical `shape` 驱动（v4/v6 起 kind 与 shape 正交）。
+/// 节点视觉形状 —— 只由 canonical `shape` 驱动（v5/v7；MATERIAL 不会进入本 View）。
 /// 本类型不得 switch/import NodeKind。
 struct NodeGlyph: Shape {
     let shape: NodeShape
@@ -124,12 +124,13 @@ struct NodeShapeView: View {
     }
 
     // 渲染只读 canonical shape（缺失时由 resolvedShape 做迁移默认兜底）。
-    private var glyph: NodeGlyph { NodeGlyph(shape: node.resolvedShape) }
+    private var glyph: NodeGlyph { NodeGlyph(shape: node.resolvedShape ?? .SQUARE) }
     private var fillColor: Color {
         switch node.kind {
         case .CENTER: return .blue.opacity(0.22)
         case .EXPLANATION: return .green.opacity(0.18)
         case .TEMPORARY: return .orange.opacity(0.18)
+        case .MATERIAL: return .gray.opacity(0.18)
         }
     }
 }
@@ -169,7 +170,7 @@ struct QuestionGraphView: View {
     }
 
     private var stableWorldPositions: [CGPoint] {
-        state.snapshot?.nodes.map { stableWorldPosition(for: $0) } ?? []
+        state.snapshot?.topologyNodes.map { stableWorldPosition(for: $0) } ?? []
     }
 
     var body: some View {
@@ -183,7 +184,7 @@ struct QuestionGraphView: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                    ForEach(snap.nodes, id: \.nodeId) { node in
+                    ForEach(snap.topologyNodes, id: \.nodeId) { node in
                         NodeShapeView(node: node,
                                       world: worldPosition(for: node),
                                       geometry: geometry,
@@ -236,13 +237,13 @@ struct QuestionGraphView: View {
     private func worldPosition(for node: GraphNodeDTO) -> CGPoint {
         state.dragTransient[node.nodeId]
             ?? state.pendingPositions[node.nodeId]
-            ?? CGPoint(x: node.layout.x, y: node.layout.y)
+            ?? CGPoint(x: node.layout?.x ?? 0, y: node.layout?.y ?? 0)
     }
 
     /// pending 是本地 durable intent，dragTransient 只是当前手势帧。
     private func stableWorldPosition(for node: GraphNodeDTO) -> CGPoint {
         state.pendingPositions[node.nodeId]
-            ?? CGPoint(x: node.layout.x, y: node.layout.y)
+            ?? CGPoint(x: node.layout?.x ?? 0, y: node.layout?.y ?? 0)
     }
 
     private func point(for node: GraphNodeDTO) -> CGPoint {
@@ -250,7 +251,7 @@ struct QuestionGraphView: View {
     }
 
     private func containsNode(at location: CGPoint, viewportOffset: CGSize) -> Bool {
-        state.snapshot?.nodes.contains {
+        state.snapshot?.topologyNodes.contains {
             geometry.visualHitRect(at: worldPosition(for: $0), viewportOffset: viewportOffset).contains(location)
         } ?? false
     }

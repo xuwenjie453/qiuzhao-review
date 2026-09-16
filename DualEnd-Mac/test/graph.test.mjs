@@ -57,20 +57,23 @@ before(() => {
 after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('store 基础', () => {
-  test('integrity ok & schema_version=6', () => {
+  test('integrity ok & schema_version=7', () => {
     const ic = store.integrity();
     assert.equal(ic.integrity, 'ok');
     assert.equal(ic.fk_violations, 0);
-    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '6');
+    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '7');
     assert.ok(store.prepare('PRAGMA table_info(nodes)').all().some((column) => column.name === 'parent_node_id'));
   });
-  test('v3 migration preserves IDs/layout/ink, backfills parent+shape, and converts legacy layout', () => {
+  test('v3→v7 migration preserves IDs/layout/ink, backfills parent+shape, and converts legacy layout', () => {
     const legacyPath = join(dir, 'legacy-v3.db');
     const legacy = new DatabaseSync(legacyPath);
     const legacyDdl = DDL
       .replace('  x_world REAL NOT NULL,\n  y_world REAL NOT NULL,\n', '')
       .replace('  parent_node_id TEXT REFERENCES nodes(node_id),\n', '')
-      .replace("  shape TEXT NOT NULL DEFAULT 'SQUARE' CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE')),\n", '')
+      .replace("  shape TEXT CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE') OR shape IS NULL),\n", '')
+      .replace("  CHECK((kind='TEMPORARY' AND round_id IS NOT NULL) OR (kind!='TEMPORARY' AND round_id IS NULL)),\n", '')
+      .replace("  CHECK((kind='MATERIAL' AND parent_node_id IS NULL AND shape IS NULL)\n        OR (kind<>'MATERIAL' AND shape IS NOT NULL))\n", '')
+      .replace('  expired_at TEXT,\n);', '  expired_at TEXT\n);')
       .replace('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id);\n', '');
     legacy.exec(legacyDdl);
     const now = '2026-09-16T00:00:00.000Z';
@@ -95,7 +98,7 @@ describe('store 基础', () => {
     legacy.close();
 
     const migrated = new StateDb(legacyPath);
-    assert.equal(migrated.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '6');
+    assert.equal(migrated.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '7');
     assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-center').parent_node_id, null);
     assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-explanation').parent_node_id, 'legacy-center');
     assert.equal(migrated.prepare('SELECT layout_revision FROM layouts WHERE node_id=?').get('legacy-explanation').layout_revision, 2);

@@ -7,7 +7,7 @@ import { dirname } from 'node:path';
 import { nowIso } from '../util.mjs';
 import { LEGACY_WORLD_HEIGHT, LEGACY_WORLD_WIDTH } from '../graph/world-layout.mjs';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const DDL = `
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -46,10 +46,10 @@ CREATE TABLE IF NOT EXISTS nodes(
   node_id TEXT PRIMARY KEY,
   graph_id TEXT NOT NULL REFERENCES graphs(graph_id),
   parent_node_id TEXT REFERENCES nodes(node_id),
-  kind TEXT NOT NULL CHECK(kind IN ('CENTER','EXPLANATION','TEMPORARY')),
-  -- v6: shape 与 kind 正交（shape=视觉，kind=业务语义）。渲染只读 shape，
-  -- 除“新建默认值/旧数据迁移默认值”外任何代码不得从 kind 推导 shape。
-  shape TEXT NOT NULL DEFAULT 'SQUARE' CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE')),
+  kind TEXT NOT NULL CHECK(kind IN ('CENTER','EXPLANATION','TEMPORARY','MATERIAL')),
+  -- v7: MATERIAL 是可阅读的 canonical node，但不是拓扑节点，因此 shape 不适用且必须为 NULL。
+  -- 其他 kind 的 canonical shape 必须存在；渲染只能读 shape，不能由 kind 推导。
+  shape TEXT CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE') OR shape IS NULL),
   title TEXT NOT NULL,
   body_markdown TEXT NOT NULL,
   body_sha256 TEXT NOT NULL,
@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS nodes(
   created_at TEXT NOT NULL,
   deleted_at TEXT,
   expired_at TEXT,
-  CHECK((kind='TEMPORARY' AND round_id IS NOT NULL) OR (kind!='TEMPORARY' AND round_id IS NULL))
+  CHECK((kind='TEMPORARY' AND round_id IS NOT NULL) OR (kind!='TEMPORARY' AND round_id IS NULL)),
+  CHECK((kind='MATERIAL' AND parent_node_id IS NULL AND shape IS NULL)
+        OR (kind<>'MATERIAL' AND shape IS NOT NULL))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_center_per_graph
   ON nodes(graph_id) WHERE kind='CENTER' AND deleted_at IS NULL;
@@ -105,6 +107,12 @@ CREATE TRIGGER IF NOT EXISTS node_body_immutable
 BEFORE UPDATE OF body_markdown, body_sha256 ON nodes
 BEGIN
   SELECT RAISE(ABORT, 'NODE_BODY_IMMUTABLE');
+END;
+CREATE TRIGGER IF NOT EXISTS material_requires_user_authored
+BEFORE INSERT ON nodes
+WHEN NEW.kind='MATERIAL' AND COALESCE((SELECT question_source FROM graphs WHERE graph_id=NEW.graph_id),'')<>'USER_AUTHORED'
+BEGIN
+  SELECT RAISE(ABORT, 'MATERIAL_REQUIRES_USER_AUTHORED');
 END;
 `;
 
@@ -266,6 +274,59 @@ export class StateDb {
       } catch (e) {
         try { this.db.exec('ROLLBACK'); } catch {}
         throw e;
+      }
+    }
+    if (current < 7) {
+      // v7: MATERIAL 是 canonical node，但它没有 shape / parent / layout。SQLite 不能原位
+      // 放宽 nodes.kind CHECK 或移除 shape 的 NOT NULL，故以保留全部 node_id 的方式重建表。
+      // 关闭 FK 只覆盖 DROP/RENAME 窗口；layouts/ink 中的外键仍指向相同 node_id。
+      this.db.exec('PRAGMA foreign_keys = OFF');
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.exec(`CREATE TABLE nodes_v7(
+          node_id TEXT PRIMARY KEY,
+          graph_id TEXT NOT NULL REFERENCES graphs(graph_id),
+          parent_node_id TEXT REFERENCES nodes_v7(node_id),
+          kind TEXT NOT NULL CHECK(kind IN ('CENTER','EXPLANATION','TEMPORARY','MATERIAL')),
+          shape TEXT CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE') OR shape IS NULL),
+          title TEXT NOT NULL,
+          body_markdown TEXT NOT NULL,
+          body_sha256 TEXT NOT NULL,
+          round_id TEXT REFERENCES rounds(round_id),
+          node_revision INTEGER NOT NULL DEFAULT 1,
+          origin_turn_ref TEXT,
+          created_at TEXT NOT NULL,
+          deleted_at TEXT,
+          expired_at TEXT,
+          CHECK((kind='TEMPORARY' AND round_id IS NOT NULL) OR (kind!='TEMPORARY' AND round_id IS NULL)),
+          CHECK((kind='MATERIAL' AND parent_node_id IS NULL AND shape IS NULL)
+                OR (kind<>'MATERIAL' AND shape IS NOT NULL))
+        );`);
+        this.db.exec(`INSERT INTO nodes_v7(
+          node_id,graph_id,parent_node_id,kind,shape,title,body_markdown,body_sha256,
+          round_id,node_revision,origin_turn_ref,created_at,deleted_at,expired_at
+        ) SELECT node_id,graph_id,parent_node_id,kind,shape,title,body_markdown,body_sha256,
+                 round_id,node_revision,origin_turn_ref,created_at,deleted_at,expired_at FROM nodes;`);
+        this.db.exec('DROP TABLE nodes');
+        this.db.exec('ALTER TABLE nodes_v7 RENAME TO nodes');
+        this.db.exec(`CREATE UNIQUE INDEX one_center_per_graph
+          ON nodes(graph_id) WHERE kind='CENTER' AND deleted_at IS NULL;`);
+        this.db.exec('CREATE INDEX idx_nodes_parent_node_id ON nodes(parent_node_id)');
+        this.db.exec(`CREATE TRIGGER node_body_immutable
+          BEFORE UPDATE OF body_markdown, body_sha256 ON nodes
+          BEGIN SELECT RAISE(ABORT, 'NODE_BODY_IMMUTABLE'); END;`);
+        this.db.exec(`CREATE TRIGGER material_requires_user_authored
+          BEFORE INSERT ON nodes
+          WHEN NEW.kind='MATERIAL' AND COALESCE((SELECT question_source FROM graphs WHERE graph_id=NEW.graph_id),'')<>'USER_AUTHORED'
+          BEGIN SELECT RAISE(ABORT, 'MATERIAL_REQUIRES_USER_AUTHORED'); END;`);
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('7', 'schema_version');
+        this.db.exec('COMMIT');
+        current = 7;
+      } catch (e) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw e;
+      } finally {
+        this.db.exec('PRAGMA foreign_keys = ON');
       }
     }
   }

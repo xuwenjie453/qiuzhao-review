@@ -124,7 +124,7 @@ export class Daemon extends EventEmitter {
       case 'question.close':
         result = svc.close(payload); break;
       case 'graph.add-node':
-        // 业务 kind(EXPLANATION/TEMPORARY) 放 node_kind, 避免与命令名 kind 冲突
+        // 业务 kind(EXPLANATION/TEMPORARY/MATERIAL) 放 node_kind, 避免与命令名 kind 冲突
         result = svc.addNode({ ...payload, kind: payload.node_kind }); break;
       case 'node.rename':
         result = svc.renameNode(payload); break;
@@ -179,7 +179,9 @@ export class Daemon extends EventEmitter {
       ops.push({ op: 'ADD_NODE', node: {
         node_id: n.node_id, owner_graph_id: n.graph_id, visibility: n.graph_id === graphId ? 'OWN' : 'INHERITED',
         parent_node_id: n.parent_node_id, kind: n.kind, shape: n.shape, title: n.title, body_markdown: n.body_markdown,
-        node_revision: n.node_revision, layout: { x: l.x_world, y: l.y_world, revision: l.layout_revision } } });
+        node_revision: n.node_revision, created_at: n.created_at, layout: n.kind === 'MATERIAL' ? null : {
+          x: l.x_world, y: l.y_world, revision: l.layout_revision,
+        } } });
     } else if (result.node_id && result.title !== undefined) {
       ops.push({ op: 'UPDATE_TITLE', node_id: result.node_id, title: result.title, node_revision: result.node_revision });
     } else if (result.node_id && result.shape !== undefined) {

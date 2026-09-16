@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // qreview-dual —— daemon 启动/停止/状态 + Agent 双端命令 CLI。
 // CLI 永远走 localhost LocalControl API, 禁止直写 SQLite。
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { join, dirname, basename, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Daemon } from '../src/daemon.mjs';
 
@@ -44,6 +44,34 @@ function readPort() {
 
 function loadJson(path) {
   return JSON.parse(readFileSync(path, 'utf-8'));
+}
+
+function materialTitle(markdown, fallback) {
+  const h1 = markdown.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim();
+  const source = h1 || fallback;
+  return [...source].slice(0, 80).join('') || '未命名资料';
+}
+
+function markdownFilesIn(directory) {
+  const entries = readdirSync(directory, { withFileTypes: true });
+  return entries.flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return markdownFilesIn(path);
+    return entry.isFile() && extname(entry.name).toLowerCase() === '.md' ? [path] : [];
+  }).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+}
+
+async function createMaterial({ roundId, title, bodyMarkdown, sourcePath = null }) {
+  const r = await requestControl('POST', '/command', {
+    command_id: crypto.randomUUID(), kind: 'graph.add-node', round_id: roundId,
+    node_kind: 'MATERIAL', ai_title: title, body_markdown: bodyMarkdown,
+  });
+  return {
+    source: sourcePath,
+    title,
+    ok: r.status < 300 && !r.json?.error,
+    ...(r.status < 300 && !r.json?.error ? { material: r.json } : { error: r.json }),
+  };
 }
 
 async function main() {
@@ -101,6 +129,42 @@ async function main() {
         const q = flag('--graph', '') ? `?graph_id=${flag('--graph', '')}` : '';
         const r = await requestControl('GET', `/graph/snapshot${q}`);
         console.log(JSON.stringify(r.json, null, 2));
+      } else if (sub === 'materials') {
+        const graphId = flag('--graph', '');
+        const r = await requestControl('GET', `/graph/materials?graph_id=${encodeURIComponent(graphId)}`);
+        console.log(JSON.stringify(r.json, null, 2));
+      } else if (sub === 'add-material') {
+        const req = loadJson(flag('--json', ''));
+        const r = await requestControl('POST', '/command', {
+          command_id: crypto.randomUUID(), kind: 'graph.add-node', node_kind: 'MATERIAL', ...req,
+        });
+        console.log(JSON.stringify(r.json, null, 2));
+      } else if (sub === 'import-markdown') {
+        const path = flag('--file', '');
+        const roundId = flag('--round', '');
+        if (!path || !roundId || !statSync(path).isFile()) throw new Error('需要存在的 --file 和 --round');
+        const bodyMarkdown = readFileSync(path, 'utf-8');
+        const title = flag('--title', materialTitle(bodyMarkdown, basename(path, extname(path))));
+        console.log(JSON.stringify(await createMaterial({ roundId, title, bodyMarkdown, sourcePath: path }), null, 2));
+      } else if (sub === 'import-folder') {
+        const directory = flag('--dir', '');
+        const roundId = flag('--round', '');
+        if (!directory || !roundId || !statSync(directory).isDirectory()) throw new Error('需要存在的 --dir 和 --round');
+        const results = [];
+        for (const path of markdownFilesIn(directory)) {
+          try {
+            const bodyMarkdown = readFileSync(path, 'utf-8');
+            results.push(await createMaterial({
+              roundId,
+              title: materialTitle(bodyMarkdown, basename(path, extname(path))),
+              bodyMarkdown,
+              sourcePath: path,
+            }));
+          } catch (error) {
+            results.push({ source: path, ok: false, error: String(error) });
+          }
+        }
+        console.log(JSON.stringify({ total: results.length, created: results.filter((x) => x.ok).length, results }, null, 2));
       }
       return;
     }
@@ -161,6 +225,10 @@ function usage() {
   node DualEnd-Mac/bin/qreview-dual.mjs question close --round <round_id>
   node DualEnd-Mac/bin/qreview-dual.mjs graph add-node --json request.json
   node DualEnd-Mac/bin/qreview-dual.mjs graph snapshot [--graph <graph_id>]
+  node DualEnd-Mac/bin/qreview-dual.mjs graph materials --graph <graph_id>
+  node DualEnd-Mac/bin/qreview-dual.mjs graph add-material --json request.json
+  node DualEnd-Mac/bin/qreview-dual.mjs graph import-markdown --round <round_id> --file <file.md> [--title <title>]
+  node DualEnd-Mac/bin/qreview-dual.mjs graph import-folder --round <round_id> --dir <folder>
   node DualEnd-Mac/bin/qreview-dual.mjs custom create --json request.json
   node DualEnd-Mac/bin/qreview-dual.mjs custom list [--query <标题或正文关键词>]
   node DualEnd-Mac/bin/qreview-dual.mjs custom show --id <custom_id>

@@ -173,8 +173,8 @@ describe('SET_NODE_SHAPE over CLIENT_COMMAND (iPad 路径端到端)', () => {
 
   test('iPad 发 SET_NODE_SHAPE → COMMAND_ACK + UPDATE_SHAPE patch + canonical 更新', async () => {
     const helloP = client.waitJson((m) => m.type === 'WELCOME');
-    client.sendJson({ v: 4, message_id: uid2(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(),
-      payload: { device_id: 'shape-ws-ipad', client_build: '4.0.0', supported_protocols: [4], last_server_seq: 0, cached_graph: null } });
+    client.sendJson({ v: 5, message_id: uid2(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(),
+      payload: { device_id: 'shape-ws-ipad', client_build: '5.0.0', supported_protocols: [5], last_server_seq: 0, cached_graph: null } });
     const w = await helloP;
     const epoch = w.payload.session_epoch;
 
@@ -188,13 +188,13 @@ describe('SET_NODE_SHAPE over CLIENT_COMMAND (iPad 路径端到端)', () => {
     const snap = await snapP;
     const graphId = snap.payload.graph_id;
     const center = snap.payload.nodes.find((n) => n.kind === 'CENTER');
-    client.sendJson({ v: 4, message_id: uid2(), type: 'ACK', session_epoch: epoch,
+    client.sendJson({ v: 5, message_id: uid2(), type: 'ACK', session_epoch: epoch,
       sent_at: new Date().toISOString(), payload: { message_id: snap.message_id } });
 
     const cmdId = uid2();
     const ackP = client.waitJson((m) => m.type === 'COMMAND_ACK' && m.payload.command_id === cmdId);
     const patchP = client.waitJson((m) => m.type === 'GRAPH_PATCH');
-    client.sendJson({ v: 4, message_id: uid2(), type: 'CLIENT_COMMAND', session_epoch: epoch,
+    client.sendJson({ v: 5, message_id: uid2(), type: 'CLIENT_COMMAND', session_epoch: epoch,
       sent_at: new Date().toISOString(),
       payload: { command_id: cmdId, kind: 'SET_NODE_SHAPE', graph_id: graphId,
         payload: { node_id: center.node_id, shape: 'TRIANGLE', base_node_revision: center.node_revision } } });

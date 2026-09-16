@@ -17,7 +17,7 @@ export class SyncSession extends EventEmitter {
     this.svc = svc;
     this.log = logger;
     this.epoch = null;
-    this.protocol = 3;
+    this.protocol = 5;
     this.deviceId = null;
     this.closed = false;
     conn.on('message', (text) => this.onMessage(text));
@@ -67,11 +67,10 @@ export class SyncSession extends EventEmitter {
     }
     this.deviceId = String(p.device_id);
     this.protocol = Math.max(...p.supported_protocols.filter((v) => SUPPORTED_PROTOCOLS.includes(v)));
-    // 最低协议要求 = 4：v4 起 node 携带 canonical `shape`（与 kind 正交）。
-    // 旧客户端只会按 kind 固定渲染、看不懂 shape，会出现“服务端形状已改但端上不显示”
-    // 的语义分叉；WORLD_V1 坐标（v3 起）同样不再向后兼容。两者合并为同一守卫。
-    if (this.protocol < 4) {
-      this.send(MSG.COMMAND_REJECTED, { reason: 'UPGRADE_REQUIRED', required_protocol: 4 });
+    // 最低协议要求 = 5：MATERIAL 可以缺失 shape/layout，并须投影到资料侧边栏而非 Canvas。
+    // 旧端会错误地把它画成普通节点，因而不下发任何 v5 图数据。
+    if (this.protocol < 5) {
+      this.send(MSG.COMMAND_REJECTED, { reason: 'UPGRADE_REQUIRED', required_protocol: 5 });
       this.conn.close(1002);
       return;
     }

@@ -1,11 +1,12 @@
 // QuestionGraph Service —— Query/Command 分离; canonical mutation 全在此模块; 不直连 bridge/CLI。
 // 规则: CENTER 不可删/唯一; EXPLANATION 永久; TEMPORARY 绑定 ACTIVE round, close 即过期且不复活;
-// body immutable; 拖动=USER_PINNED; CAS 按 node/layout revision; graph_revision++ 每次 canonical change。
+// MATERIAL 仅 USER_AUTHORED、正文不可变、无 shape/parent/layout 且不参与拓扑; body immutable;
+// 拖动=USER_PINNED; CAS 按 node/layout revision; graph_revision++ 每次 canonical change。
 import { AppError, ERR, nowIso, uuid, stableId, sha256hex } from '../util.mjs';
 import { LIMITS } from '../util.mjs';
 import { WORLD_ORIGIN, worldPointIsValid, worldRadialSlot, worldToLegacyNormalized } from './world-layout.mjs';
 
-const KINDS = new Set(['CENTER', 'EXPLANATION', 'TEMPORARY']);
+const KINDS = new Set(['CENTER', 'EXPLANATION', 'TEMPORARY', 'MATERIAL']);
 const SHAPES = new Set(['SQUARE', 'CIRCLE', 'TRIANGLE']);
 
 function assert(cond, code, msg) { if (!cond) throw new AppError(code, msg); }
@@ -71,6 +72,16 @@ export class QuestionGraphService {
     return this.store.prepare(sql).all(like, like, like);
   }
 
+  /** 当前自制图的资料目录：created_at ASC 是首版唯一排序语义。 */
+  listMaterials(graphId) {
+    const graph = this.graphGet(graphId);
+    assert(graph, ERR.GRAPH_NOT_FOUND, 'graph 不存在');
+    assert(graph.question_source === 'USER_AUTHORED', ERR.KIND_FORBIDDEN, '只有自制问题图支持 MATERIAL');
+    return this.store.prepare(`SELECT node_id,graph_id,kind,title,body_markdown,node_revision,created_at
+      FROM nodes WHERE graph_id=? AND kind='MATERIAL' AND deleted_at IS NULL
+      ORDER BY created_at ASC,node_id ASC`).all(graphId);
+  }
+
   parentGraphs(graphId) {
     return this.store.prepare(`SELECT g.*, i.inheritance_kind FROM graph_inheritance i JOIN graphs g ON g.graph_id=i.parent_graph_id
       WHERE i.child_graph_id=? ORDER BY g.graph_id`).all(graphId);
@@ -111,7 +122,8 @@ export class QuestionGraphService {
     });
   }
 
-  /** 可见节点: 未删除且未过期。TEMPORARY 只显示当前 round 的。 */
+  /** canonical 可见节点: 未删除且未过期。TEMPORARY 只显示当前 round 的。
+      MATERIAL 只从本图返回（绝不通过 Review inheritance 传播），并在 snapshot 中不带 layout。 */
   visibleNodes(graphId, roundId) {
     const rows = this.store.prepare(`WITH RECURSIVE ancestors(graph_id) AS (
        SELECT ? UNION SELECT i.parent_graph_id FROM graph_inheritance i JOIN ancestors a ON i.child_graph_id=a.graph_id
@@ -138,12 +150,15 @@ export class QuestionGraphService {
     const nodes = this.visibleNodes(graphId, roundId).map((n) => ({
       node_id: n.node_id, owner_graph_id: n.owner_graph_id, visibility: n.visibility,
       parent_node_id: n.parent_node_id, kind: n.kind, shape: n.shape, title: n.title,
-      body_markdown: n.body_markdown, node_revision: n.node_revision,
-      layout: { x: n.x_world ?? WORLD_ORIGIN.x, y: n.y_world ?? WORLD_ORIGIN.y, revision: n.layout_revision ?? 1 },
+      body_markdown: n.body_markdown, node_revision: n.node_revision, created_at: n.created_at,
+      layout: n.kind === 'MATERIAL' ? null : {
+        x: n.x_world ?? WORLD_ORIGIN.x, y: n.y_world ?? WORLD_ORIGIN.y, revision: n.layout_revision ?? 1,
+      },
     }));
     return {
       graph_id: graphId,
       question_key: g.question_key,
+      question_source: g.question_source,
       round_id: roundId ?? null,
       revision: g.graph_revision,
       center_node_id: g.center_node_id,
@@ -238,9 +253,10 @@ export class QuestionGraphService {
     });
   }
 
-  /** node.add: 仅用户显式; EXPLANATION 永久(round_id NULL), TEMPORARY 绑 round。 */
+  /** node.add: 仅用户显式; EXPLANATION/MATERIAL 永久(round_id NULL), TEMPORARY 绑 round。
+      MATERIAL 是自制图的原始阅读资料，不是 topology node。 */
   addNode({ command_id, round_id, kind, ai_title, body_markdown, parent_node_id, origin_turn_ref, actor = 'AGENT' }) {
-    assert(kind === 'EXPLANATION' || kind === 'TEMPORARY', ERR.KIND_FORBIDDEN, '只能加 EXPLANATION/TEMPORARY');
+    assert(kind === 'EXPLANATION' || kind === 'TEMPORARY' || kind === 'MATERIAL', ERR.KIND_FORBIDDEN, '只能加 EXPLANATION/TEMPORARY/MATERIAL');
     assert(titleValid(ai_title), ERR.VALIDATION, 'title 非法');
     assert(typeof body_markdown === 'string' && body_markdown.length > 0, ERR.VALIDATION, 'body 为空');
     assert(body_markdown.length <= LIMITS.nodeBodyMaxBytes, ERR.VALIDATION, 'body 超限');
@@ -252,7 +268,11 @@ export class QuestionGraphService {
       const graph = this.graphGet(round.graph_id);
       const explicitParent = parent_node_id !== undefined && parent_node_id !== null;
       let resolvedParentId = graph.center_node_id;
-      if (kind === 'TEMPORARY') {
+      if (kind === 'MATERIAL') {
+        assert(graph.question_source === 'USER_AUTHORED', ERR.KIND_FORBIDDEN, 'MATERIAL 仅支持 USER_AUTHORED 图');
+        assert(!explicitParent, ERR.VALIDATION, 'MATERIAL 不支持 parent_node_id');
+        resolvedParentId = null;
+      } else if (kind === 'TEMPORARY') {
         assert(!explicitParent, ERR.VALIDATION, 'TEMPORARY 不支持指定 parent_node_id');
       } else if (explicitParent) {
         const parent = this.nodeGet(parent_node_id);
@@ -265,16 +285,21 @@ export class QuestionGraphService {
       const nodeId = uuid();
       // creation default: EXPLANATION/TEMPORARY 都是 CIRCLE（与旧数据迁移默认不同——
       // 旧 TEMPORARY 回填为 TRIANGLE 以保旧视觉，见 state-db v6 migration）。
-      const creationShape = 'CIRCLE';
+      // MATERIAL 没有视觉 shape；它只由 iPad 的资料侧边栏投影展示。
+      const creationShape = kind === 'MATERIAL' ? null : 'CIRCLE';
       this.store.prepare(`INSERT INTO nodes(node_id,graph_id,parent_node_id,kind,shape,title,body_markdown,body_sha256,round_id,node_revision,origin_turn_ref,created_at)
                           VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`)
         .run(nodeId, round.graph_id, resolvedParentId, kind, creationShape, String(ai_title).trim(), body_markdown,
              sha256hex(body_markdown), kind === 'TEMPORARY' ? round.round_id : null,
              origin_turn_ref ?? null, now);
-      const { x, y } = this._radialSlot(round.graph_id, kind === 'TEMPORARY' ? round.round_id : null);
-      const legacy = worldToLegacyNormalized(x, y);
-      this.store.prepare('INSERT INTO layouts(node_id,x_world,y_world,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,1,0,?)')
-        .run(nodeId, x, y, legacy.x, legacy.y, now);
+      let layout = null;
+      if (kind !== 'MATERIAL') {
+        const { x, y } = this._radialSlot(round.graph_id, kind === 'TEMPORARY' ? round.round_id : null);
+        const legacy = worldToLegacyNormalized(x, y);
+        this.store.prepare('INSERT INTO layouts(node_id,x_world,y_world,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,1,0,?)')
+          .run(nodeId, x, y, legacy.x, legacy.y, now);
+        layout = { x, y, revision: 1 };
+      }
       const g = this.graphGet(round.graph_id);
       this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?')
         .run(now, g.graph_id);
@@ -282,7 +307,7 @@ export class QuestionGraphService {
       for (const gid of affected.slice(1)) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
       const result = { graph_id: round.graph_id, affected_graph_ids: affected, round_id: round.round_id, node_id: nodeId, parent_node_id: resolvedParentId, kind,
                        graph_revision: g.graph_revision + 1, graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])), node_revision: 1,
-                       layout: { x, y, revision: 1 } };
+                       layout };
       this.store.dedupPut(command_id, result);
       return result;
     });
@@ -310,7 +335,7 @@ export class QuestionGraphService {
     });
   }
 
-  /** setShape: 任意节点(含 CENTER)可改 shape; kind/parent/body/layout/round 全部不动;
+  /** setShape: 除 MATERIAL 外任意节点(含 CENTER)可改 shape; kind/parent/body/layout/round 全部不动;
    *  node_revision++ / graph_revision++。shape 是视觉语义，与 kind 正交。 */
   setNodeShape({ command_id, node_id, shape, base_node_revision, actor = 'IPAD' }) {
     assert(SHAPES.has(shape), ERR.VALIDATION, 'shape 非法');
@@ -319,6 +344,7 @@ export class QuestionGraphService {
       if (dup) return dup;
       const n = this.nodeGet(node_id);
       assert(n && !n.deleted_at, ERR.NODE_NOT_FOUND, 'node 不存在');
+      assert(n.kind !== 'MATERIAL', ERR.KIND_FORBIDDEN, 'MATERIAL 不支持 shape');
       assert(n.node_revision === base_node_revision, ERR.CAS_MISMATCH, 'node_revision CAS 冲突');
       const now = nowIso();
       this.store.prepare('UPDATE nodes SET shape=?, node_revision=node_revision+1 WHERE node_id=?')
@@ -342,6 +368,7 @@ export class QuestionGraphService {
       if (dup) return dup;
       const n = this.nodeGet(node_id);
       assert(n && !n.deleted_at, ERR.NODE_NOT_FOUND, 'node 不存在');
+      assert(n.kind !== 'MATERIAL', ERR.KIND_FORBIDDEN, 'MATERIAL 不支持 topology move');
       const l = this.store.prepare('SELECT * FROM layouts WHERE node_id=?').get(node_id);
       assert((l?.layout_revision ?? 1) === base_layout_revision, ERR.CAS_MISMATCH, 'layout_revision CAS 冲突');
       const now = nowIso();
@@ -438,7 +465,7 @@ export class QuestionGraphService {
     // 确定性 radial slot: 防重叠; 用户拖动后 pin, 不再自动重排。
     const cnt = this.store.prepare(`SELECT count(*) AS c FROM nodes n
        WHERE n.graph_id=? AND n.deleted_at IS NULL AND (n.expired_at IS NULL OR (n.kind='TEMPORARY' AND n.round_id=?))
-         AND n.kind != 'CENTER'`).get(graphId, tempRoundId ?? null).c;
+         AND n.kind IN ('EXPLANATION','TEMPORARY')`).get(graphId, tempRoundId ?? null).c;
     return worldRadialSlot(cnt);
   }
 }

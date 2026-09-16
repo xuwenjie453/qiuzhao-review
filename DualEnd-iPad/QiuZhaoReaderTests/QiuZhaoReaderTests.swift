@@ -177,8 +177,8 @@ final class StoreTests: XCTestCase {
 final class ProtocolTests: XCTestCase {
     func testEnvelopeDecode() throws {
         let raw = """
-        {"v":4,"message_id":"m1","type":"WELCOME","session_epoch":"e1","sent_at":"2026-09-08T12:34:56.123Z",
-         "payload":{"selected_protocol":4,"daemon_id":"mac-A","server_seq":3,"active":{"graph_id":"g1","round_id":"r1"}}}
+        {"v":5,"message_id":"m1","type":"WELCOME","session_epoch":"e1","sent_at":"2026-09-08T12:34:56.123Z",
+         "payload":{"selected_protocol":5,"daemon_id":"mac-A","server_seq":3,"active":{"graph_id":"g1","round_id":"r1"}}}
         """
         let env = try MessageCoder.decode(raw)
         XCTAssertEqual(env.type, "WELCOME")
@@ -188,7 +188,7 @@ final class ProtocolTests: XCTestCase {
     func testUnknownTypeDecodableAndIgnoredUpstream() {
         // M-2.7: 未知 type 记录并忽略, 不 crash —— 解码层应成功返回, 由 SyncEngine 上层忽略
         let raw = """
-        {"v":4,"message_id":"m2","type":"WHATEVER_NEW","session_epoch":null,"sent_at":"x","payload":{}}
+        {"v":5,"message_id":"m2","type":"WHATEVER_NEW","session_epoch":null,"sent_at":"x","payload":{}}
         """
         let env = try? MessageCoder.decode(raw)
         XCTAssertNotNil(env)
@@ -688,8 +688,8 @@ final class NodeShapeTests: XCTestCase {
         // 因此“kind 决定 glyph”在类型层面已不可能；这里额外断言 glyph 与 kind 无关的等价性：
         let e1 = makeNode(kind: .EXPLANATION, shape: .SQUARE)
         let e2 = makeNode(kind: .CENTER, shape: .SQUARE)
-        XCTAssertEqual(NodeGlyph(shape: e1.resolvedShape).path(in: rect),
-                       NodeGlyph(shape: e2.resolvedShape).path(in: rect))
+        XCTAssertEqual(NodeGlyph(shape: try! XCTUnwrap(e1.resolvedShape)).path(in: rect),
+                       NodeGlyph(shape: try! XCTUnwrap(e2.resolvedShape)).path(in: rect))
     }
 
     func testLocalSetShapePersistsAndQueuesOutbox() async {
@@ -752,5 +752,83 @@ final class NodeShapeTests: XCTestCase {
         let n = st.snapshot?.nodes.first { $0.nodeId == "n-legacy" }
         XCTAssertEqual(n?.shape, .TRIANGLE, "旧 TEMPORARY 迁移后应回填 TRIANGLE（保持旧视觉）")
         XCTAssertEqual(n?.kind, .TEMPORARY)
+    }
+}
+
+// MARK: - v7 MATERIAL：canonical cache 的资料侧边栏投影（不进入 Canvas）
+final class MaterialNodeTests: XCTestCase {
+    var store: ClientStore!
+    override func setUp() { store = ClientStore(dbPath: ":memory:") }
+
+    private func userMaterialSnapshot() -> [String: JSONValue] {
+        jval([
+            "graph_id": "user-graph", "question_key": "user:ug-material", "question_source": "USER_AUTHORED",
+            "round_id": "r-user", "revision": 1, "center_node_id": "center",
+            "nodes": [
+                ["node_id": "center", "kind": "CENTER", "shape": "SQUARE", "title": "自制问题", "body_markdown": "问题", "node_revision": 1,
+                 "layout": ["x": 0, "y": 0, "revision": 1]],
+                ["node_id": "explanation", "kind": "EXPLANATION", "shape": "CIRCLE", "title": "解释", "body_markdown": "解释正文", "node_revision": 1,
+                 "layout": ["x": 120, "y": 0, "revision": 1]],
+                // 即便误传 shape/layout，客户端也不把 MATERIAL 投影成 topology node。
+                ["node_id": "material", "kind": "MATERIAL", "shape": "TRIANGLE", "title": "RAG 原文", "body_markdown": "# RAG\n\n原始 Markdown", "node_revision": 1],
+            ],
+        ])
+    }
+
+    func testMaterialProjectsToSidebarNotCanvasAndHasNoShapeOrLayout() async {
+        let dto = await store.applySnapshot(payload: userMaterialSnapshot(), messageId: "material-snapshot")
+        XCTAssertTrue(dto?.isUserAuthored == true)
+        XCTAssertEqual(dto?.topologyNodes.map(\.nodeId), ["center", "explanation"])
+        XCTAssertEqual(dto?.materialNodes.map(\.nodeId), ["material"])
+        let material = dto?.materialNodes.first
+        XCTAssertNil(material?.shape)
+        XCTAssertNil(material?.resolvedShape)
+        XCTAssertNil(material?.layout)
+        XCTAssertNil(dto?.resolvedParent(of: material ?? GraphNodeDTO(nodeId: "missing", kind: .MATERIAL, title: "", bodyMarkdown: "", nodeRevision: 1)))
+
+        let cached = await store.cachedGraphState()
+        XCTAssertEqual(cached.snapshot?.materialNodes.first?.bodyMarkdown, "# RAG\n\n原始 Markdown")
+        XCTAssertNil(cached.snapshot?.materialNodes.first?.layout)
+    }
+
+    func testMaterialPatchAppearsAndRemovePatchDisappearsFromSidebarProjection() async {
+        _ = await store.applySnapshot(payload: sampleSnapshot(graphId: "g-material"), messageId: "material-seed")
+        let added = await store.applyPatch(payload: jval([
+            "graph_id": "g-material", "base_revision": 1, "target_revision": 2,
+            "ops": [["op": "ADD_NODE", "node": ["node_id": "m1", "kind": "MATERIAL", "title": "补充资料", "body_markdown": "正文", "node_revision": 1]]],
+        ]), messageId: "material-add")
+        if case .applied(let snapshot) = added {
+            XCTAssertEqual(snapshot?.materialNodes.map(\.nodeId), ["m1"])
+            XCTAssertEqual(snapshot?.topologyNodes.count, 2)
+        } else { XCTFail("MATERIAL ADD_NODE patch 应可应用") }
+
+        let removed = await store.applyPatch(payload: jval([
+            "graph_id": "g-material", "base_revision": 2, "target_revision": 3,
+            "ops": [["op": "REMOVE_NODE", "node_id": "m1"]],
+        ]), messageId: "material-remove")
+        if case .applied(let snapshot) = removed {
+            XCTAssertTrue(snapshot?.materialNodes.isEmpty == true)
+        } else { XCTFail("MATERIAL REMOVE_NODE patch 应可应用") }
+    }
+
+    func testMaterialCannotQueueShapeOrMoveMutation() async {
+        _ = await store.applySnapshot(payload: userMaterialSnapshot(), messageId: "material-guard")
+        await store.localSetShape(nodeId: "material", shape: .CIRCLE, baseNodeRevision: 1)
+        let command = await store.localMove(nodeId: "material", x: 99, y: 42, baseLayoutRevision: 1)
+        XCTAssertEqual(command, "")
+        let outbox = await store.pendingOutbox()
+        XCTAssertTrue(outbox.isEmpty)
+        let cached = await store.cachedGraphState()
+        XCTAssertNil(cached.snapshot?.materialNodes.first?.shape)
+        XCTAssertNil(cached.snapshot?.materialNodes.first?.layout)
+    }
+
+    func testBookButtonEligibilityComesOnlyFromUserAuthoredSource() {
+        let user = GraphSnapshotDTO(graphId: "g", questionKey: "user:legacy-compatible", questionSource: .USER_AUTHORED,
+                                    roundId: nil, revision: 1, centerNodeId: "c", nodes: [])
+        let formal = GraphSnapshotDTO(graphId: "g", questionKey: "qb:1", questionSource: .QUESTION_BANK,
+                                      roundId: nil, revision: 1, centerNodeId: "c", nodes: [])
+        XCTAssertTrue(user.isUserAuthored)
+        XCTAssertFalse(formal.isUserAuthored)
     }
 }

@@ -31,9 +31,10 @@ enum NodeKind: String, Codable, CaseIterable {
     case CENTER
     case EXPLANATION
     case TEMPORARY
+    case MATERIAL
 }
 
-/// v4/v6 起：shape(视觉) 与 kind(业务语义) 正交。渲染只能读 shape。
+/// v5/v7：shape(视觉) 与 topology kind(业务语义) 正交；MATERIAL 是没有 shape 的阅读资料。
 enum NodeShape: String, Codable, CaseIterable {
     case SQUARE
     case CIRCLE
@@ -43,11 +44,12 @@ enum NodeShape: String, Codable, CaseIterable {
     /// “缺失 shape 的旧记录/旧消息”兜底；不得用于渲染决策或新建默认值。
     /// （新节点 creation 默认：CENTER→SQUARE，EXPLANATION/TEMPORARY→CIRCLE，
     ///   由 Mac service 落库决定，见 question-graph-service.mjs。）
-    static func legacyMigrationDefault(for kind: NodeKind) -> NodeShape {
+    static func legacyMigrationDefault(for kind: NodeKind) -> NodeShape? {
         switch kind {
         case .CENTER: return .SQUARE
         case .EXPLANATION: return .CIRCLE
         case .TEMPORARY: return .TRIANGLE
+        case .MATERIAL: return nil
         }
     }
 }
@@ -70,23 +72,27 @@ struct GraphNodeDTO: Codable, Identifiable, Equatable {
     var title: String
     let bodyMarkdown: String
     var nodeRevision: Int
-    var layout: LayoutDTO
+    let createdAt: String?
+    /// MATERIAL 不属于 Topology Canvas，故没有 layout；其余节点必须有 world layout。
+    var layout: LayoutDTO?
 
     var isCenter: Bool { kind == .CENTER }
+    var isMaterial: Bool { kind == .MATERIAL }
 
-    /// 渲染唯一入口：优先 canonical shape，缺失时按迁移默认兜底。
-    var resolvedShape: NodeShape { shape ?? NodeShape.legacyMigrationDefault(for: kind) }
+    /// 拓扑节点渲染唯一入口：优先 canonical shape，缺失时按迁移默认兜底。
+    /// MATERIAL 的 shape 不适用，返回 nil，调用方不得把它渲染到 Canvas。
+    var resolvedShape: NodeShape? { shape ?? NodeShape.legacyMigrationDefault(for: kind) }
 
     enum CodingKeys: String, CodingKey {
         case nodeId = "node_id", ownerGraphId = "owner_graph_id", parentNodeId = "parent_node_id", visibility, kind, shape, title,
-             bodyMarkdown = "body_markdown", nodeRevision = "node_revision", layout
+             bodyMarkdown = "body_markdown", nodeRevision = "node_revision", createdAt = "created_at", layout
     }
 
     init(nodeId: String, ownerGraphId: String? = nil, parentNodeId: String? = nil, visibility: NodeVisibility = .OWN,
-         kind: NodeKind, shape: NodeShape? = nil, title: String, bodyMarkdown: String, nodeRevision: Int, layout: LayoutDTO) {
+         kind: NodeKind, shape: NodeShape? = nil, title: String, bodyMarkdown: String, nodeRevision: Int, createdAt: String? = nil, layout: LayoutDTO? = nil) {
         self.nodeId = nodeId; self.ownerGraphId = ownerGraphId; self.parentNodeId = parentNodeId; self.visibility = visibility
         self.kind = kind; self.shape = shape; self.title = title; self.bodyMarkdown = bodyMarkdown
-        self.nodeRevision = nodeRevision; self.layout = layout
+        self.nodeRevision = nodeRevision; self.createdAt = createdAt; self.layout = layout
     }
 }
 
@@ -95,23 +101,27 @@ enum NodeVisibility: String, Codable { case OWN, INHERITED }
 struct GraphSnapshotDTO: Codable, Equatable {
     let graphId: String
     let questionKey: String
+    let questionSource: QuestionSource?
     let roundId: String?
     var revision: Int
     let centerNodeId: String
     let parentGraphs: [ParentGraphInfo]
     var nodes: [GraphNodeDTO]
 
-    init(graphId: String, questionKey: String, roundId: String?, revision: Int,
+    init(graphId: String, questionKey: String, questionSource: QuestionSource? = nil, roundId: String?, revision: Int,
          centerNodeId: String, parentGraphs: [ParentGraphInfo] = [], nodes: [GraphNodeDTO]) {
-        self.graphId = graphId; self.questionKey = questionKey; self.roundId = roundId
+        self.graphId = graphId; self.questionKey = questionKey; self.questionSource = questionSource; self.roundId = roundId
         self.revision = revision; self.centerNodeId = centerNodeId; self.parentGraphs = parentGraphs; self.nodes = nodes
     }
 
     func center() -> GraphNodeDTO? { nodes.first { $0.nodeId == centerNodeId } }
-    func visibleChildren() -> [GraphNodeDTO] { nodes.filter { $0.nodeId != centerNodeId } }
+    var isUserAuthored: Bool { questionSource == .USER_AUTHORED || questionKey.hasPrefix("user:") }
+    var topologyNodes: [GraphNodeDTO] { nodes.filter { !$0.isMaterial } }
+    var materialNodes: [GraphNodeDTO] { nodes.filter(\.isMaterial) }
+    func visibleChildren() -> [GraphNodeDTO] { topologyNodes.filter { $0.nodeId != centerNodeId } }
     /// parent 缺失、已删除或来自不可见 source graph 时，仅在展示层回退当前 CENTER。
     func resolvedParent(of node: GraphNodeDTO) -> GraphNodeDTO? {
-        guard !node.isCenter else { return nil }
+        guard !node.isCenter, !node.isMaterial else { return nil }
         if let parentNodeId = node.parentNodeId,
            let parent = nodes.first(where: { $0.nodeId == parentNodeId }) {
             return parent
@@ -119,7 +129,7 @@ struct GraphSnapshotDTO: Codable, Equatable {
         return center()
     }
     enum CodingKeys: String, CodingKey {
-        case graphId = "graph_id", questionKey = "question_key", roundId = "round_id",
+        case graphId = "graph_id", questionKey = "question_key", questionSource = "question_source", roundId = "round_id",
              revision, centerNodeId = "center_node_id", parentGraphs = "parent_graphs", nodes
     }
 }
@@ -146,4 +156,5 @@ struct QuestionGraphState: Equatable {
     var pendingPositions: [String: CGPoint] = [:]
     var managedNodeId: String?          // single-tap sheet
     var readerRoute: String?            // double-tap 进入 node
+    var materialSidebarVisible = false  // 仅 USER_AUTHORED 图显示；属于本地 UI 状态，不参与同步
 }

@@ -12,16 +12,18 @@ enum GraphCodec {
         else { visibility = .OWN }
         return GraphNodeDTO(
             nodeId: nodeId, ownerGraphId: dict["owner_graph_id"]?.string,
-            parentNodeId: dict["parent_node_id"]?.string,
+            parentNodeId: kind == .MATERIAL ? nil : dict["parent_node_id"]?.string,
             visibility: visibility,
             kind: kind,
-            shape: (dict["shape"]?.string).flatMap(NodeShape.init(rawValue:)),
+            // 服务端也会拒绝，但客户端不为 malformed MATERIAL 恢复/推导视觉形状。
+            shape: kind == .MATERIAL ? nil : (dict["shape"]?.string).flatMap(NodeShape.init(rawValue:)),
             title: dict["title"]?.string ?? "",
             bodyMarkdown: dict["body_markdown"]?.string ?? "",
             nodeRevision: dict["node_revision"]?.number.map { Int($0) } ?? 1,
-            layout: LayoutDTO(
-                x: layoutD?["x"]?.number ?? 0.5,
-                y: layoutD?["y"]?.number ?? 0.5,
+            createdAt: dict["created_at"]?.string,
+            layout: kind == .MATERIAL ? nil : LayoutDTO(
+                x: layoutD?["x"]?.number ?? 0,
+                y: layoutD?["y"]?.number ?? 0,
                 revision: layoutD?["revision"]?.number.map { Int($0) } ?? 1))
     }
 
@@ -43,6 +45,7 @@ enum GraphCodec {
         guard parents.count == parentValues.count else { return nil }
         return GraphSnapshotDTO(graphId: graphId,
                                 questionKey: payload["question_key"]?.string ?? "",
+                                questionSource: payload["question_source"]?.string.flatMap(QuestionSource.init(rawValue:)),
                                 roundId: payload["round_id"]?.string,
                                 revision: payload["revision"]?.number.map { Int($0) } ?? 1,
                                 centerNodeId: center,

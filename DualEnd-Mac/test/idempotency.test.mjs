@@ -14,11 +14,11 @@ import { WsTestClient } from './ws-test-client.mjs';
 const NOLOG = { info() {}, warn() {}, error() {} };
 const uid = () => crypto.randomUUID();
 const envelope = (type, sessionEpoch, payload, messageId = uid()) => ({
-  v: 4, message_id: messageId, type, session_epoch: sessionEpoch,
+  v: 5, message_id: messageId, type, session_epoch: sessionEpoch,
   sent_at: new Date().toISOString(), payload,
 });
 const HELLO_PAYLOAD = (device) => ({
-  device_id: device, client_build: '4.0.0', supported_protocols: [4], last_server_seq: 0, cached_graph: null,
+  device_id: device, client_build: '5.0.0', supported_protocols: [5], last_server_seq: 0, cached_graph: null,
 });
 
 // ---------- Store 层 ----------

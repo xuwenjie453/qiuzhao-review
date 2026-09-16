@@ -1,4 +1,4 @@
-// Wire Protocol v3 —— Envelope + 全部消息 payload 结构（与 Mac protocol/envelope.mjs、fixtures 同步）。
+// Wire Protocol v5 —— Envelope + 全部消息 payload 结构（MATERIAL 可无 shape/layout；与 Mac 同步）。
 import Foundation
 
 /// 顶层信封 (M-2.1)。所有字段与 wire 精确对应；解码未知 type 时忽略整条消息，不 crash。
@@ -87,10 +87,10 @@ struct CachedGraphInfo: Codable {
     let revision: Int
 }
 
-/// 协议版本常量（WORLD_V1 坐标契约 + node.shape canonical；与 Mac PROTOCOL_VERSION 对齐）
+/// 协议版本常量（MATERIAL 侧边栏投影 + 无 layout/shape 节点；与 Mac PROTOCOL_VERSION 对齐）
 enum WireV1 {
-    static let version = 4
-    static let supportedVersions = [4]
+    static let version = 5
+    static let supportedVersions = [5]
     static let bonjourService = "_qiuzhaoreview._tcp"
-    static let clientBuild = "4.0.0"
+    static let clientBuild = "5.0.0"
 }

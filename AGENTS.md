@@ -73,12 +73,12 @@ python3 学习系统/cli.py expand-materials  # 用户放入新资料后增量�
 
 双端兜底：`./DualEnd-Mac/bin/daemon-fixed.sh start|stop|status`（固定端口 57689，勿用裸 `daemon start` 随机端口启动）；iPad 构建/安装/静态端点配置/离线播种/诊断钩子见 启动 Prompt_V1 `04`/`05` 号。
 
-## 5.5 节点形状（shape，与 kind 正交）
+## 5.5 节点形状与资料节点（shape / MATERIAL）
 
-- **语义**：自协议 v4 / schema v6 起，节点形状 `SQUARE`（方）/`CIRCLE`（圆）/`TRIANGLE`（三角）与业务类型 `kind` 完全解耦；**任意节点（含 CENTER）都可改形状**。
+- **语义**：自协议 v5 / schema v7 起，节点形状 `SQUARE`（方）/`CIRCLE`（圆）/`TRIANGLE`（三角）与拓扑业务类型 `kind` 完全解耦；CENTER/EXPLANATION/TEMPORARY 均可改形状。`MATERIAL` 是唯一例外：它是仅 `USER_AUTHORED` 图可用的原始 Markdown 资料，没有 shape、parent 或 Canvas layout。
 - **默认值**：新建 CENTER→方形、EXPLANATION/TEMPORARY→圆形；旧图迁移保持原视觉（旧 TEMPORARY→三角形）。
-- **操作**：iPad 上单击节点 → 节点面板 → 形状选择；Agent 侧 `node.set-shape`（`{"node_id","shape","base_node_revision"}`）。
-- **约束**：改 shape 不改变 kind/parent/body/layout；渲染只读 shape，不得由 kind 推导（唯一例外是缺失 shape 的旧记录按迁移默认兜底）。
+- **操作**：iPad 上单击拓扑节点 → 节点面板 → 形状选择；Agent 侧 `node.set-shape`（`{"node_id","shape","base_node_revision"}`）。自拟图的书本按钮打开 Material Sidebar；资料单击可改标题、双击复用 Reader/Ink。
+- **约束**：改 shape 不改变 kind/parent/body/layout；渲染只读 shape，不得由 kind 推导（唯一例外是缺失 shape 的旧记录按迁移默认兜底）。`node.set-shape(MATERIAL)`、移动 Material 和为 Material 建 topology edge 都必须拒绝；正文创建后不可改。
 
 ## 6. 绝对禁止
 

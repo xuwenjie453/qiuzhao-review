@@ -13,6 +13,7 @@ final actor ClientStore {
     CREATE TABLE IF NOT EXISTS daemon_identity(daemon_id TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS graphs_cache(
       graph_id TEXT PRIMARY KEY, question_key TEXT NOT NULL, round_id TEXT,
+      question_source TEXT,
       revision INTEGER NOT NULL, center_node_id TEXT NOT NULL, parent_graphs_json TEXT NOT NULL DEFAULT '[]', active INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS nodes_cache(
@@ -20,6 +21,7 @@ final actor ClientStore {
       parent_node_id TEXT,
       shape TEXT,
       body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL,
+      created_at TEXT,
       x_world REAL NOT NULL, y_world REAL NOT NULL,
       x_norm REAL, y_norm REAL,
       layout_revision INTEGER NOT NULL,
@@ -68,7 +70,9 @@ final actor ClientStore {
                 WHERE shape IS NULL
                 """)
         }
+        if !nodeCols.contains("created_at") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN created_at TEXT") }
         if !graphCols.contains("parent_graphs_json") { try? db.exec("ALTER TABLE graphs_cache ADD COLUMN parent_graphs_json TEXT NOT NULL DEFAULT '[]'") }
+        if !graphCols.contains("question_source") { try? db.exec("ALTER TABLE graphs_cache ADD COLUMN question_source TEXT") }
         if nodeCols.contains("x_norm") && nodeCols.contains("y_norm") {
             try? db.exec("UPDATE nodes_cache SET x_world=(x_norm - 0.5) * ?, y_world=(y_norm - 0.5) * ? WHERE x_world IS NULL OR y_world IS NULL",
                          [Double(GraphWorldSpace.legacyWidth), Double(GraphWorldSpace.legacyHeight)])
@@ -126,7 +130,7 @@ final actor ClientStore {
 
     func loadSnapshot(graphId: String) -> GraphSnapshotDTO? {
         guard let g = try? db.query("SELECT * FROM graphs_cache WHERE graph_id=?", [graphId]).first else { return nil }
-        let nodes = (try? db.query("SELECT n.*, m.visibility FROM nodes_cache n JOIN graph_node_membership_cache m ON m.node_id=n.node_id WHERE m.graph_id=? AND n.locally_deleted=0 ORDER BY n.rowid",
+        let nodes = (try? db.query("SELECT n.*, m.visibility FROM nodes_cache n JOIN graph_node_membership_cache m ON m.node_id=n.node_id WHERE m.graph_id=? AND n.locally_deleted=0 ORDER BY n.created_at ASC, n.node_id ASC",
                                    [graphId]))?.compactMap { row -> GraphNodeDTO? in
             guard let kind = NodeKind(rawValue: row["kind"] as? String ?? "") else { return nil }
             return GraphNodeDTO(nodeId: row["node_id"] as! String,
@@ -138,12 +142,16 @@ final actor ClientStore {
                                 title: row["title"] as? String ?? "",
                                 bodyMarkdown: row["body_markdown"] as? String ?? "",
                                 nodeRevision: (row["node_revision"] as? Int64).map(Int.init) ?? 1,
-                                layout: LayoutDTO(x: row["x_world"] as? Double ?? 0,
-                                                  y: row["y_world"] as? Double ?? 0,
-                                                  revision: (row["layout_revision"] as? Int64).map(Int.init) ?? 1))
+                                createdAt: row["created_at"] as? String,
+                                // MATERIAL 没有 canvas layout；缓存仍保留占位列以兼容旧数据库，
+                                // 但绝不把它投影为拓扑坐标。
+                                layout: kind == .MATERIAL ? nil : LayoutDTO(x: row["x_world"] as? Double ?? 0,
+                                                                             y: row["y_world"] as? Double ?? 0,
+                                                                             revision: (row["layout_revision"] as? Int64).map(Int.init) ?? 1))
         } ?? []
         return GraphSnapshotDTO(graphId: graphId,
                                 questionKey: g["question_key"] as? String ?? "",
+                                questionSource: (g["question_source"] as? String).flatMap(QuestionSource.init(rawValue:)),
                                 roundId: g["round_id"] as? String,
                                 revision: (g["revision"] as? Int64).map(Int.init) ?? 1,
                                 centerNodeId: g["center_node_id"] as? String ?? "",
@@ -163,8 +171,8 @@ final actor ClientStore {
         db.begin()
         defer { db.rollback() }
         let parents = (try? JSONEncoder().encode(dto.parentGraphs)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        try? db.exec("INSERT OR REPLACE INTO graphs_cache(graph_id,question_key,round_id,revision,center_node_id,parent_graphs_json,active,updated_at) VALUES (?,?,?,?,?,?,1,?)",
-                     [dto.graphId, dto.questionKey, dto.roundId ?? "", dto.revision, dto.centerNodeId, parents, Date().timeIntervalSince1970])
+        try? db.exec("INSERT OR REPLACE INTO graphs_cache(graph_id,question_key,question_source,round_id,revision,center_node_id,parent_graphs_json,active,updated_at) VALUES (?,?,?,?,?,?,?,1,?)",
+                     [dto.graphId, dto.questionKey, dto.questionSource?.rawValue, dto.roundId ?? "", dto.revision, dto.centerNodeId, parents, Date().timeIntervalSince1970])
         // 保留本地未发送 outbox 意图的节点(不标删除): 简单策略——标记 server-absent 的本地 clean 节点为删除
         let existing = (try? db.query("SELECT node_id FROM graph_node_membership_cache WHERE graph_id=?", [dto.graphId])) ?? []
         let serverIds = Set(dto.nodes.map(\.nodeId))
@@ -185,12 +193,12 @@ final actor ClientStore {
             let pending = pendingRow != nil
             let pendingMove = (pendingRow?["kind"] as? String) == "MOVE_NODE"
             let title = (pending && local?["title"] != nil) ? (local?["title"] as? String ?? n.title) : n.title
-            let x = (pendingMove ? local?["x_world"] as? Double : nil) ?? n.layout.x
-            let y = (pendingMove ? local?["y_world"] as? Double : nil) ?? n.layout.y
+            let x = (pendingMove ? local?["x_world"] as? Double : nil) ?? n.layout?.x ?? 0
+            let y = (pendingMove ? local?["y_world"] as? Double : nil) ?? n.layout?.y ?? 0
             let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
-            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,shape,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
-                         [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.parentNodeId, n.kind.rawValue, n.resolvedShape.rawValue, title, n.bodyMarkdown, n.nodeRevision,
-                          x, y, legacy.x, legacy.y, n.layout.revision, Date().timeIntervalSince1970])
+            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,shape,title,body_markdown,node_revision,created_at,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                         [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.parentNodeId, n.kind.rawValue, n.shape?.rawValue ?? n.resolvedShape?.rawValue, title, n.bodyMarkdown, n.nodeRevision, n.createdAt,
+                          x, y, legacy.x, legacy.y, n.layout?.revision ?? 1, Date().timeIntervalSince1970])
             try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                          [dto.graphId, n.nodeId, n.visibility.rawValue])
         }
@@ -221,10 +229,12 @@ final actor ClientStore {
             switch opName {
             case "ADD_NODE":
                 guard let nv = op["node"]?.dict, let n = GraphCodec.node(from: nv) else { continue }
-                let legacy = GraphWorldSpace.worldToLegacyNormalized(x: n.layout.x, y: n.layout.y)
-                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,shape,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
-                    [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.parentNodeId, n.kind.rawValue, n.resolvedShape.rawValue, n.title, n.bodyMarkdown, n.nodeRevision,
-                     n.layout.x, n.layout.y, legacy.x, legacy.y, n.layout.revision, Date().timeIntervalSince1970])
+                let x = n.layout?.x ?? 0
+                let y = n.layout?.y ?? 0
+                let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
+                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,shape,title,body_markdown,node_revision,created_at,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                    [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.parentNodeId, n.kind.rawValue, n.shape?.rawValue ?? n.resolvedShape?.rawValue, n.title, n.bodyMarkdown, n.nodeRevision, n.createdAt,
+                     x, y, legacy.x, legacy.y, n.layout?.revision ?? 1, Date().timeIntervalSince1970])
                 try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                              [graphId, n.nodeId, n.visibility.rawValue])
                 nodeDirty = true
@@ -238,6 +248,9 @@ final actor ClientStore {
                              [shapeRaw, op["node_revision"]?.number.map { Int($0) } ?? 0, Date().timeIntervalSince1970, nid])
             case "UPDATE_LAYOUT":
                 guard let nid = op["node_id"]?.string, let lv = op["layout"]?.dict else { continue }
+                // 防御性保护：即使未来有错误客户端发来 MATERIAL layout patch，也不得写入
+                // topology 投影。
+                if (try? db.query("SELECT kind FROM nodes_cache WHERE node_id=?", [nid]).first?["kind"] as? String) == NodeKind.MATERIAL.rawValue { continue }
                 let x = lv["x"]?.number ?? 0
                 let y = lv["y"]?.number ?? 0
                 let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
@@ -304,6 +317,7 @@ final actor ClientStore {
     /// v6: shape 修改走与 rename 相同的 durable 纪律：先写本地 DB → outbox → 网络重放。
     func localSetShape(nodeId: String, shape: NodeShape, baseNodeRevision: Int) {
         db.begin(); defer { db.rollback() }
+        guard (try? db.query("SELECT kind FROM nodes_cache WHERE node_id=? AND locally_deleted=0", [nodeId]).first?["kind"] as? String) != NodeKind.MATERIAL.rawValue else { return }
         try? db.exec("UPDATE nodes_cache SET shape=?, updated_at=? WHERE node_id=? AND locally_deleted=0",
                      [shape.rawValue, Date().timeIntervalSince1970, nodeId])
         let messageId = UUID().uuidString.lowercased()
@@ -317,6 +331,7 @@ final actor ClientStore {
     /// keep the optimistic position until the matching server snapshot arrives.
     func localMove(nodeId: String, x: Double, y: Double, baseLayoutRevision: Int) -> String {
         db.begin(); defer { db.rollback() }
+        guard (try? db.query("SELECT kind FROM nodes_cache WHERE node_id=? AND locally_deleted=0", [nodeId]).first?["kind"] as? String) != NodeKind.MATERIAL.rawValue else { return "" }
         let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
         try? db.exec("UPDATE nodes_cache SET x_world=?, y_world=?, x_norm=?, y_norm=?, updated_at=? WHERE node_id=? AND locally_deleted=0",
                      [x, y, legacy.x, legacy.y, Date().timeIntervalSince1970, nodeId])

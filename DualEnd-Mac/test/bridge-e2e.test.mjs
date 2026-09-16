@@ -44,11 +44,11 @@ after(async () => {
 
 test('1-2. connect + HELLO → WELCOME(新 session_epoch)', async () => {
   client.sendJson({
-    v: 4, message_id: uid(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(),
-    payload: { device_id: 'test-ipad-A', client_build: '4.0.0', supported_protocols: [4], last_server_seq: 0, cached_graph: null },
+    v: 5, message_id: uid(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(),
+    payload: { device_id: 'test-ipad-A', client_build: '5.0.0', supported_protocols: [5], last_server_seq: 0, cached_graph: null },
   });
   const w = await client.waitJson((m) => m.type === 'WELCOME');
-  assert.equal(w.payload.selected_protocol, 4);
+  assert.equal(w.payload.selected_protocol, 5);
   assert.ok(w.payload.session_epoch);
   firstEpoch = w.payload.session_epoch;
   assert.equal(w.payload.daemon_id, daemon.daemonId);
@@ -82,7 +82,7 @@ test('6. CLIENT_COMMAND move → COMMAND_ACK(canonical) + patch', async () => {
   const center = snapRes.nodes.find((n) => n.kind === 'CENTER');
   const ackP = client.waitJson((m) => m.type === 'COMMAND_ACK');
   client.sendJson({
-    v: 4, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(),
+    v: 5, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(),
     payload: { command_id: uid(), kind: 'MOVE_NODE', graph_id: snapRes.graph_id, payload: { node_id: center.node_id, x_world: 42_000, y_world: -17_000, base_layout_revision: center.layout.revision } },
   });
   const ack = await ackP;
@@ -100,8 +100,8 @@ test('7. 重复 command → one effect', async () => {
   const curRev = center.node_revision;
   const ack1 = client.waitJson((m) => m.type === 'COMMAND_ACK' && m.payload.command_id === cmdId);
   const payload = { command_id: cmdId, kind: 'RENAME_NODE', graph_id: snapRes.graph_id, payload: { node_id: center.node_id, title: '题目改一次', base_node_revision: curRev } };
-  client.sendJson({ v: 4, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(), payload });
-  client.sendJson({ v: 4, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(), payload }); // 重复
+  client.sendJson({ v: 5, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(), payload });
+  client.sendJson({ v: 5, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(), payload }); // 重复
   const ack = await ack1;
   const row = daemon.store.prepare('SELECT title FROM nodes WHERE node_id=?').get(center.node_id);
   assert.equal(row.title, '题目改一次');
@@ -114,7 +114,7 @@ test('8. 重连 → 新 session_epoch 隔离', async () => {
   await new Promise((r) => setTimeout(r, 150));
   const c2 = new WsTestClient();
   await c2.connect(bridgePort);
-  c2.sendJson({ v: 4, message_id: uid(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(), payload: { device_id: 'test-ipad-A', client_build: '4.0.0', supported_protocols: [4], last_server_seq: 0, cached_graph: { graph_id: 'g', revision: 0 } } });
+  c2.sendJson({ v: 5, message_id: uid(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(), payload: { device_id: 'test-ipad-A', client_build: '5.0.0', supported_protocols: [5], last_server_seq: 0, cached_graph: { graph_id: 'g', revision: 0 } } });
   const w = await c2.waitJson((m) => m.type === 'WELCOME');
   assert.ok(w.payload.session_epoch);
   assert.notEqual(w.payload.session_epoch, firstEpoch);   // 新 epoch 隔离旧会话
@@ -127,14 +127,14 @@ test('9. revision mismatch → 请求 snapshot 恢复', async () => {
   const node = snap.nodes.find((n) => n.kind !== 'CENTER') ?? snap.nodes.find((n) => n.kind === 'CENTER');
   const rejP = client.waitJson((m) => m.type === 'COMMAND_REJECTED');
   client.sendJson({
-    v: 4, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(),
+    v: 5, message_id: uid(), type: 'CLIENT_COMMAND', session_epoch: null, sent_at: new Date().toISOString(),
     payload: { command_id: uid(), kind: 'MOVE_NODE', graph_id: snap.graph_id, payload: { node_id: node.node_id, x_world: 100, y_world: 100, base_layout_revision: 999 } },
   });
   const rej = await rejP;
   assert.equal(rej.payload.reason, 'CAS_MISMATCH');
   // snapshot 请求恢复
   const snapP = client.waitJson((m) => m.type === 'GRAPH_SNAPSHOT');
-  client.sendJson({ v: 4, message_id: uid(), type: 'SNAPSHOT_REQUEST', session_epoch: null, sent_at: new Date().toISOString(), payload: { graph_id: snap.graph_id } });
+  client.sendJson({ v: 5, message_id: uid(), type: 'SNAPSHOT_REQUEST', session_epoch: null, sent_at: new Date().toISOString(), payload: { graph_id: snap.graph_id } });
   const s2 = await snapP;
   assert.equal(s2.payload.graph_id, snap.graph_id);
   assert.ok(s2.payload.revision >= 1);

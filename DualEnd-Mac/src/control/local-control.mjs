@@ -1,7 +1,7 @@
 // Local Control Server —— 仅绑定 127.0.0.1; Agent CLI / 本机 API 用。
 // 规则: CLI 只经此 API; 禁止 CLI/WS handler 直写 DB; canonical mutation 只经 command service。
 import { parseEnvelope } from '../protocol/envelope.mjs'; // 复用 schema 形状参考
-import { AppError } from '../util.mjs';
+import { AppError, LIMITS } from '../util.mjs';
 
 const QUERY_ROUTES = {
   '/status': (d) => ({
@@ -22,6 +22,10 @@ const QUERY_ROUTES = {
     return d.svc.snapshotPayload(gid, round?.round_id ?? null);
   },
   '/graph/get-by-question': (d, q) => d.svc.graphByKey(q.get('question_key')) ?? { error: 'GRAPH_NOT_FOUND' },
+  '/graph/materials': (d, q) => {
+    const graphId = q.get('graph_id');
+    return graphId ? { items: d.svc.listMaterials(graphId) } : { error: 'VALIDATION', reason: '需要 graph_id' };
+  },
   '/custom/list': (d, q) => ({ items: d.svc.listUserGraphs(q.get('query') ?? '') }),
   '/custom/get': (d, q) => d.svc.userGraphById(q.get('id')) ?? { error: 'USER_GRAPH_NOT_FOUND' },
 };
@@ -39,12 +43,15 @@ export class LocalControl {
       try {
         const r = QUERY_ROUTES[url.pathname](this.daemon, url.searchParams);
         this.send(res, 200, r);
-      } catch (e) { this.send(res, 500, { error: 'INTERNAL', detail: String(e) }); }
+      } catch (e) {
+        if (e instanceof AppError) this.send(res, 422, { error: e.code, reason: e.message });
+        else this.send(res, 500, { error: 'INTERNAL', detail: String(e) });
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/command') {
       let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 1_000_000) req.destroy(); });
+      req.on('data', (c) => { body += c; if (body.length > LIMITS.nodeBodyMaxBytes + 128 * 1024) req.destroy(); });
       req.on('end', () => {
         try {
           const p = JSON.parse(body);
