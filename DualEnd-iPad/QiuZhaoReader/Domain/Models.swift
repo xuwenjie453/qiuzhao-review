@@ -47,19 +47,23 @@ struct GraphNodeDTO: Codable, Identifiable, Equatable {
     let kind: NodeKind
     var title: String
     let bodyMarkdown: String
+    let parentNodeId: String?
     var nodeRevision: Int
     var layout: LayoutDTO
 
     var isCenter: Bool { kind == .CENTER }
     enum CodingKeys: String, CodingKey {
         case nodeId = "node_id", ownerGraphId = "owner_graph_id", visibility, kind, title,
-             bodyMarkdown = "body_markdown", nodeRevision = "node_revision", layout
+             bodyMarkdown = "body_markdown", parentNodeId = "parent_node_id",
+             nodeRevision = "node_revision", layout
     }
 
     init(nodeId: String, ownerGraphId: String? = nil, visibility: NodeVisibility = .OWN,
-         kind: NodeKind, title: String, bodyMarkdown: String, nodeRevision: Int, layout: LayoutDTO) {
+         kind: NodeKind, title: String, bodyMarkdown: String, parentNodeId: String? = nil,
+         nodeRevision: Int, layout: LayoutDTO) {
         self.nodeId = nodeId; self.ownerGraphId = ownerGraphId; self.visibility = visibility
         self.kind = kind; self.title = title; self.bodyMarkdown = bodyMarkdown
+        self.parentNodeId = parentNodeId
         self.nodeRevision = nodeRevision; self.layout = layout
     }
 }
@@ -83,6 +87,18 @@ struct GraphSnapshotDTO: Codable, Equatable {
 
     func center() -> GraphNodeDTO? { nodes.first { $0.nodeId == centerNodeId } }
     func visibleChildren() -> [GraphNodeDTO] { nodes.filter { $0.nodeId != centerNodeId } }
+
+    /// Canonical parent id is preserved on the node. Rendering alone falls back to
+    /// the current graph CENTER when an old/missing/deleted/inherited parent is not visible.
+    func resolvedParent(of node: GraphNodeDTO) -> GraphNodeDTO? {
+        guard !node.isCenter else { return nil }
+        if let parentNodeId = node.parentNodeId,
+           let visibleParent = nodes.first(where: { $0.nodeId == parentNodeId }) {
+            return visibleParent
+        }
+        return center()
+    }
+
     enum CodingKeys: String, CodingKey {
         case graphId = "graph_id", questionKey = "question_key", roundId = "round_id",
              revision, centerNodeId = "center_node_id", parentGraphs = "parent_graphs", nodes
