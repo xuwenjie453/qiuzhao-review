@@ -234,19 +234,26 @@ final class TopologyLogicTests: XCTestCase {
         XCTAssertTrue(geometry.visualHitRect(at: CGPoint(x: 0.37, y: 0.63), viewportOffset: offset).contains(visual))
     }
 
-    func testViewportConstraintCentersExcludeTransientNodeDragPositions() {
+    func testNodeStartPanOwnershipStaysBlockedAfterNodeMovesAway() {
         let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
-        let stablePositions = [CGPoint(x: 0.18, y: 0.22), CGPoint(x: 0.82, y: 0.76)]
-        let transientA = CGPoint(x: 0.32, y: 0.35)
-        let transientB = CGPoint(x: 0.94, y: 0.08)
+        let initialNodePosition = CGPoint(x: 0.5, y: 0.5)
+        let startLocation = geometry.screenPoint(from: initialNodePosition)
+        let session = geometry.beginCanvasPanSession(
+            startLocation: startLocation,
+            stableNormalizedPositions: [initialNodePosition],
+            initialViewportOffset: .zero
+        )
+        let movedNodePosition = CGPoint(x: 0.9, y: 0.5)
+        let incorrectPerFrameResult = geometry.beginCanvasPanSession(
+            startLocation: startLocation,
+            stableNormalizedPositions: [movedNodePosition],
+            initialViewportOffset: .zero
+        )
 
-        let constraintCentersBefore = geometry.viewportConstraintCenters(from: stablePositions)
-        let constraintCentersDuringTransientA = geometry.viewportConstraintCenters(from: stablePositions)
-        let constraintCentersDuringTransientB = geometry.viewportConstraintCenters(from: stablePositions)
-
-        XCTAssertEqual(constraintCentersBefore, constraintCentersDuringTransientA)
-        XCTAssertEqual(constraintCentersBefore, constraintCentersDuringTransientB)
-        XCTAssertNotEqual(geometry.screenPoint(from: transientA), geometry.screenPoint(from: transientB))
+        XCTAssertFalse(session.ownsCanvas)
+        XCTAssertTrue(incorrectPerFrameResult.ownsCanvas)
+        XCTAssertEqual(session.constraintCenters,
+                       geometry.viewportConstraintCenters(from: [initialNodePosition]))
     }
 
     func testNodeDragKeepsViewportOffsetStableWhenConstraintsAreStable() {
@@ -268,13 +275,20 @@ final class TopologyLogicTests: XCTestCase {
     func testCanvasPanChangesOnlyLocalViewportOffset() {
         let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
         let stablePositions = [CGPoint(x: 0.1, y: 0.2), CGPoint(x: 0.9, y: 0.8)]
-        let centers = geometry.viewportConstraintCenters(from: stablePositions)
         let committed = CGSize(width: 40, height: -30)
-        let proposed = CGSize(width: committed.width + 120, height: committed.height + 80)
-        let panned = geometry.clampedViewportOffset(proposed: proposed, nodeCenters: centers)
+        let blankStart = CGPoint(x: 10, y: 10)
+        let session = geometry.beginCanvasPanSession(
+            startLocation: blankStart,
+            stableNormalizedPositions: stablePositions,
+            initialViewportOffset: committed
+        )
+        let proposed = CGSize(width: session.initialViewportOffset.width + 120,
+                              height: session.initialViewportOffset.height + 80)
+        let panned = geometry.clampedViewportOffset(proposed: proposed, nodeCenters: session.constraintCenters)
 
+        XCTAssertTrue(session.ownsCanvas)
         XCTAssertNotEqual(panned, committed)
-        XCTAssertEqual(centers, geometry.viewportConstraintCenters(from: stablePositions))
+        XCTAssertEqual(session.constraintCenters, geometry.viewportConstraintCenters(from: stablePositions))
     }
 
     func testPanOffsetIsRemovedBeforeNodeDragWritesNormalizedPosition() {

@@ -1,6 +1,13 @@
 // GraphCanvasGeometry —— QuestionGraph 唯一的 normalized/local 几何转换来源。
 import CoreGraphics
 
+/// Canvas Pan 的所有权必须在手势起点确定，并在整个手势周期内保持不变。
+struct CanvasPanSession: Equatable {
+    let ownsCanvas: Bool
+    let initialViewportOffset: CGSize
+    let constraintCenters: [CGPoint]
+}
+
 struct GraphCanvasGeometry: Equatable {
     let viewportSize: CGSize
     let contentRect: CGRect
@@ -51,6 +58,21 @@ struct GraphCanvasGeometry: Equatable {
     /// viewport 的约束边界只应由稳定的布局位置计算；调用方不能传入 drag transient。
     func viewportConstraintCenters(from stableNormalizedPositions: [CGPoint]) -> [CGPoint] {
         stableNormalizedPositions.map { screenPoint(from: $0) }
+    }
+
+    /// 以稳定布局快照判定一次 Canvas Pan 的归属。
+    /// 不能在节点已开始移动后用新的 visual hit rect 重算这个结果。
+    func beginCanvasPanSession(startLocation: CGPoint,
+                               stableNormalizedPositions: [CGPoint],
+                               initialViewportOffset: CGSize) -> CanvasPanSession {
+        let ownsCanvas = !stableNormalizedPositions.contains {
+            visualHitRect(at: $0, viewportOffset: initialViewportOffset).contains(startLocation)
+        }
+        return CanvasPanSession(
+            ownsCanvas: ownsCanvas,
+            initialViewportOffset: initialViewportOffset,
+            constraintCenters: viewportConstraintCenters(from: stableNormalizedPositions)
+        )
     }
 
     /// 可把任一最边缘 node center 移到 viewport 中心，但不允许整个图被甩出可恢复范围。
