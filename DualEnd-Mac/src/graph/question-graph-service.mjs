@@ -4,8 +4,6 @@
 import { AppError, ERR, nowIso, uuid, stableId, sha256hex, clamp } from '../util.mjs';
 import { LIMITS } from '../util.mjs';
 
-const KINDS = new Set(['CENTER', 'EXPLANATION', 'TEMPORARY']);
-
 function assert(cond, code, msg) { if (!cond) throw new AppError(code, msg); }
 function titleValid(t) {
   const s = String(t ?? '').trim();
@@ -19,11 +17,7 @@ export class QuestionGraphService {
   graphByKey(questionKey) {
     return this.store.prepare('SELECT * FROM graphs WHERE question_key=?').get(questionKey);
   }
-  /**
-   * 图身份：正式题按题目 ID；Review 按 capsule ID；用户自拟图按系统生成的 custom ID。
-   * probe_key 只是本次 retrieval probe 的元数据，不能把同一 Capsule 的不同问法拆成多张图。
-   * 对旧数据按 source_id 查询，因而历史上已创建的 Capsule 图也会被复用。
-   */
+
   graphByQuestionRef(questionRef) {
     if (questionRef.source === 'REVIEW_CAPSULE' || questionRef.source === 'USER_AUTHORED') {
       return this.store.prepare(`SELECT * FROM graphs
@@ -32,17 +26,21 @@ export class QuestionGraphService {
     }
     return this.graphByKey(questionRef.question_key);
   }
+
   graphIdentityKey(questionRef) {
     if (questionRef.source === 'REVIEW_CAPSULE') return `capsule:${questionRef.source_id}`;
     if (questionRef.source === 'USER_AUTHORED') return `user:${questionRef.source_id}`;
     return questionRef.question_key;
   }
+
   graphGet(graphId) {
     return this.store.prepare('SELECT * FROM graphs WHERE graph_id=?').get(graphId);
   }
+
   activeRound() {
     return this.store.prepare("SELECT * FROM rounds WHERE status='ACTIVE'").get();
   }
+
   nodeGet(nodeId) {
     return this.store.prepare('SELECT * FROM nodes WHERE node_id=?').get(nodeId);
   }
@@ -96,13 +94,16 @@ export class QuestionGraphService {
       assert(child && parent, ERR.GRAPH_NOT_FOUND, 'graph 不存在');
       assert(child.question_source === 'REVIEW_CAPSULE' && parent.question_source === 'QUESTION_BANK', ERR.VALIDATION, '继承仅允许 Review → QuestionBank');
       assert(child_graph_id !== parent_graph_id, ERR.VALIDATION, '禁止自继承');
-      // reject cycles before insert
       assert(!this.descendantGraphIds(child_graph_id).includes(parent_graph_id), ERR.VALIDATION, '继承关系会形成环');
       const now = nowIso();
       const ins = this.store.prepare(`INSERT OR IGNORE INTO graph_inheritance(child_graph_id,parent_graph_id,inheritance_kind,created_at)
         VALUES (?,?,?,?)`).run(child_graph_id, parent_graph_id, inheritance_kind, now);
       const affected = this.descendantGraphIds(child_graph_id);
-      if (Number(ins.changes) === 1) for (const gid of affected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1,updated_at=? WHERE graph_id=?').run(now, gid);
+      if (Number(ins.changes) === 1) {
+        for (const gid of affected) {
+          this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1,updated_at=? WHERE graph_id=?').run(now, gid);
+        }
+      }
       const g = this.graphGet(child_graph_id);
       const result = { child_graph_id, parent_graph_id, graph_id: child_graph_id, affected_graph_ids: affected, graph_revision: g.graph_revision, inherited: true };
       this.store.dedupPut(command_id, result); return result;
@@ -111,7 +112,7 @@ export class QuestionGraphService {
 
   /** 可见节点: 未删除且未过期。TEMPORARY 只显示当前 round 的。 */
   visibleNodes(graphId, roundId) {
-    const rows = this.store.prepare(`WITH RECURSIVE ancestors(graph_id) AS (
+    return this.store.prepare(`WITH RECURSIVE ancestors(graph_id) AS (
        SELECT ? UNION SELECT i.parent_graph_id FROM graph_inheritance i JOIN ancestors a ON i.child_graph_id=a.graph_id
      ), candidates AS (
        SELECT n.*, 0 AS inherited FROM nodes n WHERE n.graph_id=?
@@ -127,16 +128,20 @@ export class QuestionGraphService {
          AND (c.expired_at IS NULL OR (c.kind='TEMPORARY' AND c.round_id=?))
        GROUP BY c.node_id
        ORDER BY c.created_at, c.node_id`).all(graphId, graphId, graphId, roundId ?? null);
-    return rows;
   }
 
   snapshotPayload(graphId, roundId) {
     const g = this.graphGet(graphId);
     if (!g) return null;
     const nodes = this.visibleNodes(graphId, roundId).map((n) => ({
-      node_id: n.node_id, owner_graph_id: n.owner_graph_id, visibility: n.visibility,
-      kind: n.kind, title: n.title,
-      body_markdown: n.body_markdown, node_revision: n.node_revision,
+      node_id: n.node_id,
+      owner_graph_id: n.owner_graph_id,
+      visibility: n.visibility,
+      kind: n.kind,
+      title: n.title,
+      body_markdown: n.body_markdown,
+      parent_node_id: n.parent_node_id ?? null,
+      node_revision: n.node_revision,
       layout: { x: n.x_norm ?? 0.5, y: n.y_norm ?? 0.5, revision: n.layout_revision ?? 1 },
     }));
     return {
@@ -151,7 +156,6 @@ export class QuestionGraphService {
   }
 
   // ============ Commands ============
-  /** question.open: ensure graph + 新 round。全局同时仅一个 ACTIVE round。 */
   open({ command_id, actor = 'AGENT', question_ref, question_body_markdown, ai_title, agent_session_ref, inherit_from }) {
     assert(question_ref && ['QUESTION_BANK', 'REVIEW_CAPSULE', 'USER_AUTHORED'].includes(question_ref.source), ERR.VALIDATION, 'question_ref.source 非法');
     assert(question_ref.question_key && typeof question_ref.question_key === 'string', ERR.VALIDATION, '缺少 question_key');
@@ -175,15 +179,14 @@ export class QuestionGraphService {
                             VALUES (?,?,?,?,?,1,?,?,?)`)
           .run(graphId, identityKey, question_ref.source, question_ref.source_id ?? '',
                question_ref.probe_key ?? null, centerId, now, now);
-        this.store.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
-                            VALUES (?,?,?,?,?,?,NULL,1,?)`)
+        this.store.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,parent_node_id,node_revision,created_at)
+                            VALUES (?,?,?,?,?,?,NULL,NULL,1,?)`)
           .run(centerId, graphId, 'CENTER', String(ai_title).trim(), question_body_markdown,
                sha256hex(question_body_markdown), now);
         this.store.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,0.5,0.5,1,0,?)')
           .run(centerId, now);
         g = this.graphGet(graphId);
       }
-      // 全局仅一个 ACTIVE round; 若已有(同图=重开讨论 / 异图=切题) → 先 INTERRUPTED, 其 temporary 过期
       const prior = this.activeRound();
       if (prior) this._closeRound(prior, 'INTERRUPTED');
       const roundId = uuid();
@@ -202,7 +205,9 @@ export class QuestionGraphService {
             .run(g.graph_id, parent.graph_id, now);
           if (Number(ins.changes) === 1) {
             inheritanceAffected = this.descendantGraphIds(g.graph_id);
-            for (const gid of inheritanceAffected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1,updated_at=? WHERE graph_id=?').run(now, gid);
+            for (const gid of inheritanceAffected) {
+              this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1,updated_at=? WHERE graph_id=?').run(now, gid);
+            }
             g = this.graphGet(g.graph_id);
           }
         } else parentGraphMissing = true;
@@ -215,7 +220,6 @@ export class QuestionGraphService {
     });
   }
 
-  /** question.close(round_id): CLOSED + 该轮 TEMPORARY 过期(expired_at)。 */
   close({ command_id, round_id, actor = 'AGENT' }) {
     return this.store.withTx(() => {
       const dup = this.store.dedupGet(command_id);
@@ -235,8 +239,8 @@ export class QuestionGraphService {
     });
   }
 
-  /** node.add: 仅用户显式; EXPLANATION 永久(round_id NULL), TEMPORARY 绑 round。 */
-  addNode({ command_id, round_id, kind, ai_title, body_markdown, origin_turn_ref, actor = 'AGENT' }) {
+  /** node.add: EXPLANATION 可指定 CENTER/EXPLANATION parent；TEMPORARY 固定挂 CENTER。 */
+  addNode({ command_id, round_id, kind, ai_title, body_markdown, parent_node_id, origin_turn_ref, actor = 'AGENT' }) {
     assert(kind === 'EXPLANATION' || kind === 'TEMPORARY', ERR.KIND_FORBIDDEN, '只能加 EXPLANATION/TEMPORARY');
     assert(titleValid(ai_title), ERR.VALIDATION, 'title 非法');
     assert(typeof body_markdown === 'string' && body_markdown.length > 0, ERR.VALIDATION, 'body 为空');
@@ -246,13 +250,24 @@ export class QuestionGraphService {
       if (dup) return dup;
       const round = this.store.prepare("SELECT * FROM rounds WHERE round_id=? AND status='ACTIVE'").get(round_id);
       assert(round, ERR.ROUND_NOT_ACTIVE, '需要 ACTIVE round');
+      const graph = this.graphGet(round.graph_id);
+      let resolvedParentId = graph.center_node_id;
+      if (kind === 'TEMPORARY') {
+        assert(parent_node_id === undefined || parent_node_id === null, ERR.VALIDATION, 'TEMPORARY 不允许自定义 parent');
+      } else if (parent_node_id !== undefined && parent_node_id !== null) {
+        const parent = this.nodeGet(parent_node_id);
+        assert(parent && !parent.deleted_at, ERR.NODE_NOT_FOUND, 'parent node 不存在或已删除');
+        assert(parent.graph_id === round.graph_id, ERR.VALIDATION, 'parent 必须属于当前 graph');
+        assert(parent.kind === 'CENTER' || parent.kind === 'EXPLANATION', ERR.VALIDATION, 'parent 只能是 CENTER/EXPLANATION');
+        resolvedParentId = parent.node_id;
+      }
       const now = nowIso();
       const nodeId = uuid();
-      this.store.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,origin_turn_ref,created_at)
-                          VALUES (?,?,?,?,?,?,?,1,?,?)`)
+      this.store.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,parent_node_id,node_revision,origin_turn_ref,created_at)
+                          VALUES (?,?,?,?,?,?,?,?,1,?,?)`)
         .run(nodeId, round.graph_id, kind, String(ai_title).trim(), body_markdown,
              sha256hex(body_markdown), kind === 'TEMPORARY' ? round.round_id : null,
-             origin_turn_ref ?? null, now);
+             resolvedParentId, origin_turn_ref ?? null, now);
       const { x, y } = this._radialSlot(round.graph_id, kind === 'TEMPORARY' ? round.round_id : null);
       this.store.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,1,0,?)')
         .run(nodeId, x, y, now);
@@ -260,16 +275,26 @@ export class QuestionGraphService {
       this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?')
         .run(now, g.graph_id);
       const affected = this.descendantGraphIds(round.graph_id);
-      for (const gid of affected.slice(1)) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
-      const result = { graph_id: round.graph_id, affected_graph_ids: affected, round_id: round.round_id, node_id: nodeId, kind,
-                       graph_revision: g.graph_revision + 1, graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])), node_revision: 1,
-                       layout: { x, y, revision: 1 } };
+      for (const gid of affected.slice(1)) {
+        this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
+      }
+      const result = {
+        graph_id: round.graph_id,
+        affected_graph_ids: affected,
+        round_id: round.round_id,
+        node_id: nodeId,
+        parent_node_id: resolvedParentId,
+        kind,
+        graph_revision: g.graph_revision + 1,
+        graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])),
+        node_revision: 1,
+        layout: { x, y, revision: 1 },
+      };
       this.store.dedupPut(command_id, result);
       return result;
     });
   }
 
-  /** rename: CENTER/任意节点可改 title; body 不动; node_revision++ / graph_revision++。 */
   renameNode({ command_id, node_id, title, base_node_revision, actor = 'IPAD' }) {
     assert(titleValid(title), ERR.VALIDATION, 'title 非法');
     return this.store.withTx(() => {
@@ -291,7 +316,6 @@ export class QuestionGraphService {
     });
   }
 
-  /** move: layout CAS; clamp 0..1; pinned=1(USER_PINNED); layout_revision++ / graph_revision++。 */
   moveNode({ command_id, node_id, x_norm, y_norm, base_layout_revision, actor = 'IPAD' }) {
     const x = clamp(Number(x_norm), 0, 1), y = clamp(Number(y_norm), 0, 1);
     return this.store.withTx(() => {
@@ -317,18 +341,21 @@ export class QuestionGraphService {
     });
   }
 
-  /** delete: CENTER → 拒绝; 其它 tombstone(deleted_at); graph_revision++; ink 保留为 orphaned backup。 */
   deleteNode({ command_id, node_id, base_node_revision, actor = 'IPAD' }) {
     return this.store.withTx(() => {
       const dup = this.store.dedupGet(command_id);
       if (dup) return dup;
       const n = this.nodeGet(node_id);
-      if (!n) { // 已删 = 幂等成功
-        const r = { deleted: true, node_id: node_id, idempotent: true };
+      if (!n) {
+        const r = { deleted: true, node_id, idempotent: true };
         this.store.dedupPut(command_id, r);
         return r;
       }
-      if (n.deleted_at) { const r = { deleted: true, node_id, idempotent: true }; this.store.dedupPut(command_id, r); return r; }
+      if (n.deleted_at) {
+        const r = { deleted: true, node_id, idempotent: true };
+        this.store.dedupPut(command_id, r);
+        return r;
+      }
       if (n.kind === 'CENTER') throw new AppError(ERR.CENTER_DELETE_FORBIDDEN, 'CENTER 不可删除');
       assert(n.node_revision === base_node_revision, ERR.CAS_MISMATCH, 'node_revision CAS 冲突');
       const now = nowIso();
@@ -343,8 +370,6 @@ export class QuestionGraphService {
     });
   }
 
-  /** ink.put: full PKDrawing snapshot; ink_revision 期望 = server current + 1。
-      重复 revision + 同 hash = 幂等成功; 低 revision 忽略(返回 stale); 跳 revision → INK_REVISION_GAP。 */
   putInk({ command_id, node_id, ink_revision, format, blob, blob_sha256, actor = 'IPAD' }) {
     return this.store.withTx(() => {
       const dup = this.store.dedupGet(command_id);
@@ -381,24 +406,23 @@ export class QuestionGraphService {
   _closeRound(round, status) {
     const now = nowIso();
     this.store.prepare('UPDATE rounds SET status=?, closed_at=? WHERE round_id=?').run(status, now, round.round_id);
-    // 该轮 TEMPORARY 过期(不复活)
     const temp = this.store.prepare("SELECT node_id FROM nodes WHERE round_id=? AND kind='TEMPORARY' AND deleted_at IS NULL AND expired_at IS NULL").all(round.round_id);
-    for (const t of temp) {
-      this.store.prepare('UPDATE nodes SET expired_at=? WHERE node_id=?').run(now, t.node_id);
-    }
+    for (const t of temp) this.store.prepare('UPDATE nodes SET expired_at=? WHERE node_id=?').run(now, t.node_id);
     return temp;
   }
 
   _radialSlot(graphId, tempRoundId) {
-    // 确定性 radial slot: 防重叠; 用户拖动后 pin, 不再自动重排。
     const cnt = this.store.prepare(`SELECT count(*) AS c FROM nodes n
        WHERE n.graph_id=? AND n.deleted_at IS NULL AND (n.expired_at IS NULL OR (n.kind='TEMPORARY' AND n.round_id=?))
          AND n.kind != 'CENTER'`).get(graphId, tempRoundId ?? null).c;
     const idx = cnt;
-    const golden = 2.399963229728653;            // golden angle (rad)
+    const golden = 2.399963229728653;
     const ring = Math.floor(idx / 12);
     const radius = Math.min(0.18 + ring * 0.12, 0.42);
     const a = golden * idx;
-    return { x: clamp(0.5 + radius * Math.cos(a), 0.05, 0.95), y: clamp(0.5 + radius * Math.sin(a), 0.08, 0.92) };
+    return {
+      x: clamp(0.5 + radius * Math.cos(a), 0.05, 0.95),
+      y: clamp(0.5 + radius * Math.sin(a), 0.08, 0.92),
+    };
   }
 }
