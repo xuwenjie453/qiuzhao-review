@@ -17,7 +17,7 @@ final actor ClientStore {
       updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS nodes_cache(
       node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, owner_graph_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL,
-      body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL,
+      body_markdown TEXT NOT NULL, parent_node_id TEXT, node_revision INTEGER NOT NULL,
       x_norm REAL NOT NULL, y_norm REAL NOT NULL, layout_revision INTEGER NOT NULL,
       locally_deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ink_cache(
@@ -49,6 +49,7 @@ final actor ClientStore {
         let nodeCols = Set((try? db.query("PRAGMA table_info(nodes_cache)"))?.compactMap { $0["name"] as? String } ?? [])
         let graphCols = Set((try? db.query("PRAGMA table_info(graphs_cache)"))?.compactMap { $0["name"] as? String } ?? [])
         if !nodeCols.contains("owner_graph_id") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN owner_graph_id TEXT") }
+        if !nodeCols.contains("parent_node_id") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN parent_node_id TEXT") }
         if !graphCols.contains("parent_graphs_json") { try? db.exec("ALTER TABLE graphs_cache ADD COLUMN parent_graphs_json TEXT NOT NULL DEFAULT '[]'") }
         try? db.exec("UPDATE nodes_cache SET owner_graph_id=graph_id WHERE owner_graph_id IS NULL")
         try? db.exec("INSERT OR IGNORE INTO graph_node_membership_cache(graph_id,node_id,visibility) SELECT graph_id,node_id,'OWN' FROM nodes_cache")
@@ -84,6 +85,7 @@ final actor ClientStore {
                                 kind: kind,
                                 title: row["title"] as? String ?? "",
                                 bodyMarkdown: row["body_markdown"] as? String ?? "",
+                                parentNodeId: row["parent_node_id"] as? String,
                                 nodeRevision: (row["node_revision"] as? Int64).map(Int.init) ?? 1,
                                 layout: LayoutDTO(x: row["x_norm"] as? Double ?? 0.5,
                                                   y: row["y_norm"] as? Double ?? 0.5,
@@ -125,7 +127,7 @@ final actor ClientStore {
                 if !memberships { try? db.exec("UPDATE nodes_cache SET locally_deleted=1 WHERE node_id=?", [nid]) }
             }
         }
-        // upsert nodes（保留本地未同步 title/layout 意图）
+        // upsert nodes（保留本地未同步 title/layout 意图；parent 由 server canonical 覆盖）
         for n in dto.nodes {
             let local = try? db.query("SELECT title,x_norm,y_norm,node_revision,layout_revision FROM nodes_cache WHERE node_id=?", [n.nodeId]).first
             let pendingRow = try? db.query("SELECT kind FROM outbox WHERE entity_id=? ORDER BY rowid LIMIT 1", [n.nodeId]).first
@@ -134,8 +136,8 @@ final actor ClientStore {
             let title = (pending && local?["title"] != nil) ? (local?["title"] as? String ?? n.title) : n.title
             let x = (pendingMove ? local?["x_norm"] as? Double : nil) ?? n.layout.x
             let y = (pendingMove ? local?["y_norm"] as? Double : nil) ?? n.layout.y
-            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
-                [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.kind.rawValue, title, n.bodyMarkdown, n.nodeRevision,
+            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,kind,title,body_markdown,parent_node_id,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.kind.rawValue, title, n.bodyMarkdown, n.parentNodeId ?? NSNull(), n.nodeRevision,
                  x, y, n.layout.revision, Date().timeIntervalSince1970])
             try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                          [dto.graphId, n.nodeId, n.visibility.rawValue])
@@ -167,8 +169,8 @@ final actor ClientStore {
             switch opName {
             case "ADD_NODE":
                 guard let nv = op["node"]?.dict, let n = GraphCodec.node(from: nv) else { continue }
-                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
-                    [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.kind.rawValue, n.title, n.bodyMarkdown, n.nodeRevision,
+                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,kind,title,body_markdown,parent_node_id,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                    [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.kind.rawValue, n.title, n.bodyMarkdown, n.parentNodeId ?? NSNull(), n.nodeRevision,
                      n.layout.x, n.layout.y, n.layout.revision, Date().timeIntervalSince1970])
                 try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                              [graphId, n.nodeId, n.visibility.rawValue])
