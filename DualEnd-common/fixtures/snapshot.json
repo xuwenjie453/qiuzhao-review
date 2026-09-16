@@ -1,5 +1,5 @@
 {
- "v": 1,
+ "v": 4,
  "message_id": "f-snap-1",
  "type": "GRAPH_SNAPSHOT",
  "session_epoch": "e-1",
@@ -21,7 +21,8 @@
      "x": 0.5,
      "y": 0.5,
      "revision": 1
-    }
+    },
+    "shape": "SQUARE"
    },
    {
     "node_id": "n1",
@@ -33,7 +34,8 @@
      "x": 0.7,
      "y": 0.4,
      "revision": 1
-    }
+    },
+    "shape": "CIRCLE"
    }
   ]
  }

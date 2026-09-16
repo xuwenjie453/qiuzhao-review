@@ -7,7 +7,7 @@ import { dirname } from 'node:path';
 import { nowIso } from '../util.mjs';
 import { LEGACY_WORLD_HEIGHT, LEGACY_WORLD_WIDTH } from '../graph/world-layout.mjs';
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const DDL = `
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS nodes(
   graph_id TEXT NOT NULL REFERENCES graphs(graph_id),
   parent_node_id TEXT REFERENCES nodes(node_id),
   kind TEXT NOT NULL CHECK(kind IN ('CENTER','EXPLANATION','TEMPORARY')),
+  -- v6: shape 与 kind 正交（shape=视觉，kind=业务语义）。渲染只读 shape，
+  -- 除“新建默认值/旧数据迁移默认值”外任何代码不得从 kind 推导 shape。
+  shape TEXT NOT NULL DEFAULT 'SQUARE' CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE')),
   title TEXT NOT NULL,
   body_markdown TEXT NOT NULL,
   body_sha256 TEXT NOT NULL,
@@ -236,6 +239,30 @@ export class StateDb {
         this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('5', 'schema_version');
         this.db.exec('COMMIT');
         current = 5;
+      } catch (e) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw e;
+      }
+    }
+    if (current < 6) {
+      // v6: 节点新增 canonical `shape`，与 kind 正交。
+      // 迁移默认值刻意 ≠ 新建默认值：旧 TEMPORARY 曾是三角形，回填 TRIANGLE 以保持旧图视觉；
+      // 而新建 TEMPORARY 的 creation default 是 CIRCLE（见 question-graph-service）。
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const columns = this.db.prepare('PRAGMA table_info(nodes)').all().map((c) => c.name);
+        if (!columns.includes('shape')) {
+          this.db.exec(`ALTER TABLE nodes ADD COLUMN shape TEXT NOT NULL DEFAULT 'SQUARE'
+            CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE'))`);
+        }
+        this.db.exec(`UPDATE nodes SET shape=CASE kind
+          WHEN 'CENTER' THEN 'SQUARE'
+          WHEN 'EXPLANATION' THEN 'CIRCLE'
+          WHEN 'TEMPORARY' THEN 'TRIANGLE'
+          ELSE 'SQUARE' END`);
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('6', 'schema_version');
+        this.db.exec('COMMIT');
+        current = 6;
       } catch (e) {
         try { this.db.exec('ROLLBACK'); } catch {}
         throw e;

@@ -177,8 +177,8 @@ final class StoreTests: XCTestCase {
 final class ProtocolTests: XCTestCase {
     func testEnvelopeDecode() throws {
         let raw = """
-        {"v":3,"message_id":"m1","type":"WELCOME","session_epoch":"e1","sent_at":"2026-09-08T12:34:56.123Z",
-         "payload":{"selected_protocol":3,"daemon_id":"mac-A","server_seq":3,"active":{"graph_id":"g1","round_id":"r1"}}}
+        {"v":4,"message_id":"m1","type":"WELCOME","session_epoch":"e1","sent_at":"2026-09-08T12:34:56.123Z",
+         "payload":{"selected_protocol":4,"daemon_id":"mac-A","server_seq":3,"active":{"graph_id":"g1","round_id":"r1"}}}
         """
         let env = try MessageCoder.decode(raw)
         XCTAssertEqual(env.type, "WELCOME")
@@ -188,7 +188,7 @@ final class ProtocolTests: XCTestCase {
     func testUnknownTypeDecodableAndIgnoredUpstream() {
         // M-2.7: 未知 type 记录并忽略, 不 crash —— 解码层应成功返回, 由 SyncEngine 上层忽略
         let raw = """
-        {"v":3,"message_id":"m2","type":"WHATEVER_NEW","session_epoch":null,"sent_at":"x","payload":{}}
+        {"v":4,"message_id":"m2","type":"WHATEVER_NEW","session_epoch":null,"sent_at":"x","payload":{}}
         """
         let env = try? MessageCoder.decode(raw)
         XCTAssertNotNil(env)
@@ -647,5 +647,110 @@ final class PencilLoopGuardTests: XCTestCase {
         pencil.apply(to: canvas, isEraser: true)    // 同值 → 不发布
         XCTAssertEqual(fired, 1)
         _ = sink
+    }
+}
+
+// MARK: - v6 NodeShape：kind 与 shape 正交（canonical shape + 迁移默认 + outbox + glyph）
+final class NodeShapeTests: XCTestCase {
+    var store: ClientStore!
+    override func setUp() { store = ClientStore(dbPath: ":memory:") }
+
+    private func makeNode(kind: NodeKind, shape: NodeShape?) -> GraphNodeDTO {
+        GraphNodeDTO(nodeId: "n-\(kind.rawValue)-\(shape?.rawValue ?? "nil")", kind: kind, shape: shape,
+                     title: "t", bodyMarkdown: "b", nodeRevision: 1,
+                     layout: LayoutDTO(x: 0, y: 0, revision: 1))
+    }
+
+    func testResolvedShapePrefersCanonicalShape() {
+        // canonical shape 与 kind 完全解耦：EXPLANATION 可以是 TRIANGLE
+        XCTAssertEqual(makeNode(kind: .EXPLANATION, shape: .TRIANGLE).resolvedShape, .TRIANGLE)
+        XCTAssertEqual(makeNode(kind: .CENTER, shape: .CIRCLE).resolvedShape, .CIRCLE)
+        XCTAssertEqual(makeNode(kind: .TEMPORARY, shape: .SQUARE).resolvedShape, .SQUARE)
+    }
+
+    func testResolvedShapeFallsBackToMigrationDefaultsOnly() {
+        // 缺失 shape（旧记录）时按“旧数据迁移默认”兜底：CENTER→SQUARE / EXPLANATION→CIRCLE / TEMPORARY→TRIANGLE
+        XCTAssertEqual(makeNode(kind: .CENTER, shape: nil).resolvedShape, .SQUARE)
+        XCTAssertEqual(makeNode(kind: .EXPLANATION, shape: nil).resolvedShape, .CIRCLE)
+        XCTAssertEqual(makeNode(kind: .TEMPORARY, shape: nil).resolvedShape, .TRIANGLE)
+    }
+
+    func testNodeGlyphIsDrivenByShapeNotKind() {
+        let rect = CGRect(x: 0, y: 0, width: 20, height: 20)
+        let square = NodeGlyph(shape: .SQUARE).path(in: rect)
+        let circle = NodeGlyph(shape: .CIRCLE).path(in: rect)
+        let triangle = NodeGlyph(shape: .TRIANGLE).path(in: rect)
+        // 三种 shape 路径互不相同
+        XCTAssertNotEqual(square, circle)
+        XCTAssertNotEqual(circle, triangle)
+        XCTAssertNotEqual(square, triangle)
+        // 同 shape 不同 kind 的输入不存在（NodeGlyph 只接收 shape），
+        // 因此“kind 决定 glyph”在类型层面已不可能；这里额外断言 glyph 与 kind 无关的等价性：
+        let e1 = makeNode(kind: .EXPLANATION, shape: .SQUARE)
+        let e2 = makeNode(kind: .CENTER, shape: .SQUARE)
+        XCTAssertEqual(NodeGlyph(shape: e1.resolvedShape).path(in: rect),
+                       NodeGlyph(shape: e2.resolvedShape).path(in: rect))
+    }
+
+    func testLocalSetShapePersistsAndQueuesOutbox() async {
+        _ = await store.applySnapshot(payload: sampleSnapshot(), messageId: "m-shape-seed")
+        await store.localSetShape(nodeId: "n1", shape: .TRIANGLE, baseNodeRevision: 1)
+        let st = await store.cachedGraphState()
+        let n1 = st.snapshot?.nodes.first { $0.nodeId == "n1" }
+        XCTAssertEqual(n1?.shape, .TRIANGLE)     // 本地 durable 生效
+        XCTAssertEqual(n1?.kind, .EXPLANATION)   // kind 不变
+        let outbox = await store.pendingOutbox()
+        XCTAssertEqual(outbox.count, 1)
+        XCTAssertEqual(outbox.first?["kind"] as? String, "SET_NODE_SHAPE")
+    }
+
+    func testSnapshotCarriesAndPersistsCanonicalShape() async {
+        var payload = sampleSnapshot()
+        if var nodes = payload["nodes"]?.array, nodes.count >= 2, case .object(var d) = nodes[1] {
+            d["shape"] = .string("TRIANGLE")
+            nodes[1] = .object(d)
+            payload["nodes"] = .array(nodes)
+        }
+        _ = await store.applySnapshot(payload: payload, messageId: "m-shape-snap")
+        let st = await store.cachedGraphState()
+        let n1 = st.snapshot?.nodes.first { $0.nodeId == "n1" }
+        XCTAssertEqual(n1?.shape, .TRIANGLE)
+        // 未知 shape 字符串应被安全忽略（resolvedShape 回落到迁移默认），不 crash
+        var bad = sampleSnapshot()
+        if var nodes = bad["nodes"]?.array, nodes.count >= 2, case .object(var d) = nodes[1] {
+            d["shape"] = .string("HEXAGON")
+            nodes[1] = .object(d)
+            bad["nodes"] = .array(nodes)
+        }
+        _ = await store.applySnapshot(payload: bad, messageId: "m-shape-bad")
+        let st2 = await store.cachedGraphState()
+        let n1b = st2.snapshot?.nodes.first { $0.nodeId == "n1" }
+        // 未知 shape 被安全忽略（不 crash），缓存写入时固化为迁移默认值（与 server 端迁移语义一致）
+        XCTAssertEqual(n1b?.shape, .CIRCLE)
+        XCTAssertEqual(n1b?.kind, .EXPLANATION)
+    }
+
+    func testCacheMigrationBackfillsLegacyShape() async {
+        let tmp = NSTemporaryDirectory() + "legacy-shape-\(UUID().uuidString).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        // 构造“旧版”库：nodes_cache 没有 shape 列，且有一条 TEMPORARY 记录
+        if let db = SQLiteDB(path: tmp) {
+            try? db.exec("""
+                CREATE TABLE graphs_cache(graph_id TEXT PRIMARY KEY, question_key TEXT NOT NULL, round_id TEXT,
+                  revision INTEGER NOT NULL, center_node_id TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+                CREATE TABLE nodes_cache(node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+                  body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL, x_world REAL NOT NULL, y_world REAL NOT NULL,
+                  layout_revision INTEGER NOT NULL, locally_deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+                CREATE TABLE graph_node_membership_cache(graph_id TEXT NOT NULL, node_id TEXT NOT NULL, visibility TEXT NOT NULL, PRIMARY KEY(graph_id,node_id));
+                """)
+            try? db.exec("INSERT INTO graphs_cache VALUES ('g-legacy','qb:x','r1',1,'n-legacy',1,'2026-01-01')")
+            try? db.exec("INSERT INTO nodes_cache(node_id,graph_id,kind,title,body_markdown,node_revision,x_world,y_world,layout_revision,locally_deleted,updated_at) VALUES ('n-legacy','g-legacy','TEMPORARY','旧临时','b',1,0,0,1,0,'2026-01-01')")
+            try? db.exec("INSERT INTO graph_node_membership_cache VALUES ('g-legacy','n-legacy','OWN')")
+        }
+        let legacy = ClientStore(dbPath: tmp)
+        let st = await legacy.cachedGraphState()
+        let n = st.snapshot?.nodes.first { $0.nodeId == "n-legacy" }
+        XCTAssertEqual(n?.shape, .TRIANGLE, "旧 TEMPORARY 迁移后应回填 TRIANGLE（保持旧视觉）")
+        XCTAssertEqual(n?.kind, .TEMPORARY)
     }
 }

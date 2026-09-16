@@ -128,6 +128,8 @@ export class Daemon extends EventEmitter {
         result = svc.addNode({ ...payload, kind: payload.node_kind }); break;
       case 'node.rename':
         result = svc.renameNode(payload); break;
+      case 'node.set-shape':
+        result = svc.setNodeShape(payload); break;
       case 'node.move':
         result = svc.moveNode(payload); break;
       case 'node.delete':
@@ -176,10 +178,12 @@ export class Daemon extends EventEmitter {
       const l = this.store.prepare('SELECT * FROM layouts WHERE node_id=?').get(result.node_id);
       ops.push({ op: 'ADD_NODE', node: {
         node_id: n.node_id, owner_graph_id: n.graph_id, visibility: n.graph_id === graphId ? 'OWN' : 'INHERITED',
-        parent_node_id: n.parent_node_id, kind: n.kind, title: n.title, body_markdown: n.body_markdown,
+        parent_node_id: n.parent_node_id, kind: n.kind, shape: n.shape, title: n.title, body_markdown: n.body_markdown,
         node_revision: n.node_revision, layout: { x: l.x_world, y: l.y_world, revision: l.layout_revision } } });
     } else if (result.node_id && result.title !== undefined) {
       ops.push({ op: 'UPDATE_TITLE', node_id: result.node_id, title: result.title, node_revision: result.node_revision });
+    } else if (result.node_id && result.shape !== undefined) {
+      ops.push({ op: 'UPDATE_SHAPE', node_id: result.node_id, shape: result.shape, node_revision: result.node_revision });
     } else if (result.node_id && result.x_world !== undefined) {
       ops.push({ op: 'UPDATE_LAYOUT', node_id: result.node_id, layout: { x: result.x_world, y: result.y_world, revision: result.layout_revision } });
     } else if (result.deleted) {

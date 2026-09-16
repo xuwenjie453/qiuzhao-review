@@ -73,6 +73,13 @@ python3 学习系统/cli.py expand-materials  # 用户放入新资料后增量�
 
 双端兜底：`./DualEnd-Mac/bin/daemon-fixed.sh start|stop|status`（固定端口 57689，勿用裸 `daemon start` 随机端口启动）；iPad 构建/安装/静态端点配置/离线播种/诊断钩子见 启动 Prompt_V1 `04`/`05` 号。
 
+## 5.5 节点形状（shape，与 kind 正交）
+
+- **语义**：自协议 v4 / schema v6 起，节点形状 `SQUARE`（方）/`CIRCLE`（圆）/`TRIANGLE`（三角）与业务类型 `kind` 完全解耦；**任意节点（含 CENTER）都可改形状**。
+- **默认值**：新建 CENTER→方形、EXPLANATION/TEMPORARY→圆形；旧图迁移保持原视觉（旧 TEMPORARY→三角形）。
+- **操作**：iPad 上单击节点 → 节点面板 → 形状选择；Agent 侧 `node.set-shape`（`{"node_id","shape","base_node_revision"}`）。
+- **约束**：改 shape 不改变 kind/parent/body/layout；渲染只读 shape，不得由 kind 推导（唯一例外是缺失 shape 的旧记录按迁移默认兜底）。
+
 ## 6. 绝对禁止
 
 - 重新设计 V1 架构 / 另起平行版本目录 / 合并五个数据库成一个；

@@ -1,14 +1,14 @@
 {
- "v": 1,
+ "v": 4,
  "message_id": "f-hello-1",
  "type": "HELLO",
  "session_epoch": null,
  "sent_at": "2026-09-08T12:34:56.123Z",
  "payload": {
   "device_id": "ipad-A",
-  "client_build": "1.0.0",
+  "client_build": "4.0.0",
   "supported_protocols": [
-   1
+   4
   ],
   "last_server_seq": 0,
   "cached_graph": null

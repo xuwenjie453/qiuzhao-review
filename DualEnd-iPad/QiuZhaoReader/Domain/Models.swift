@@ -33,6 +33,25 @@ enum NodeKind: String, Codable, CaseIterable {
     case TEMPORARY
 }
 
+/// v4/v6 起：shape(视觉) 与 kind(业务语义) 正交。渲染只能读 shape。
+enum NodeShape: String, Codable, CaseIterable {
+    case SQUARE
+    case CIRCLE
+    case TRIANGLE
+
+    /// 旧数据迁移默认值 —— 这是全工程唯一允许的 kind→shape 映射，且只用于
+    /// “缺失 shape 的旧记录/旧消息”兜底；不得用于渲染决策或新建默认值。
+    /// （新节点 creation 默认：CENTER→SQUARE，EXPLANATION/TEMPORARY→CIRCLE，
+    ///   由 Mac service 落库决定，见 question-graph-service.mjs。）
+    static func legacyMigrationDefault(for kind: NodeKind) -> NodeShape {
+        switch kind {
+        case .CENTER: return .SQUARE
+        case .EXPLANATION: return .CIRCLE
+        case .TEMPORARY: return .TRIANGLE
+        }
+    }
+}
+
 struct LayoutDTO: Codable, Equatable {
     var x: Double
     var y: Double
@@ -46,21 +65,27 @@ struct GraphNodeDTO: Codable, Identifiable, Equatable {
     let parentNodeId: String?
     let visibility: NodeVisibility
     let kind: NodeKind
+    /// canonical shape（v4 wire / v6 cache 必带）。Optional 仅为容错旧消息与旧缓存。
+    var shape: NodeShape?
     var title: String
     let bodyMarkdown: String
     var nodeRevision: Int
     var layout: LayoutDTO
 
     var isCenter: Bool { kind == .CENTER }
+
+    /// 渲染唯一入口：优先 canonical shape，缺失时按迁移默认兜底。
+    var resolvedShape: NodeShape { shape ?? NodeShape.legacyMigrationDefault(for: kind) }
+
     enum CodingKeys: String, CodingKey {
-        case nodeId = "node_id", ownerGraphId = "owner_graph_id", parentNodeId = "parent_node_id", visibility, kind, title,
+        case nodeId = "node_id", ownerGraphId = "owner_graph_id", parentNodeId = "parent_node_id", visibility, kind, shape, title,
              bodyMarkdown = "body_markdown", nodeRevision = "node_revision", layout
     }
 
     init(nodeId: String, ownerGraphId: String? = nil, parentNodeId: String? = nil, visibility: NodeVisibility = .OWN,
-         kind: NodeKind, title: String, bodyMarkdown: String, nodeRevision: Int, layout: LayoutDTO) {
+         kind: NodeKind, shape: NodeShape? = nil, title: String, bodyMarkdown: String, nodeRevision: Int, layout: LayoutDTO) {
         self.nodeId = nodeId; self.ownerGraphId = ownerGraphId; self.parentNodeId = parentNodeId; self.visibility = visibility
-        self.kind = kind; self.title = title; self.bodyMarkdown = bodyMarkdown
+        self.kind = kind; self.shape = shape; self.title = title; self.bodyMarkdown = bodyMarkdown
         self.nodeRevision = nodeRevision; self.layout = layout
     }
 }

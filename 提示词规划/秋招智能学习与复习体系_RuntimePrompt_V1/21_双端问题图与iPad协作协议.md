@@ -96,7 +96,11 @@ node DualEnd-Mac/bin/qreview-dual.mjs custom open --id <custom_id>
 | `EXPLANATION` | 圆 | 永久 | 默认连 CENTER；也可在创建时连同图的 CENTER/EXPLANATION 父节点；不可改 body |
 | `TEMPORARY` | 三角 | 仅当前轮次 | 固定连 CENTER；用户显式加；`question.close` 后自动移出，下轮不复活 |
 
-iPad 端只能：拖动布局、改 title、删除非 CENTER 节点、Apple Pencil 手写（ink 按 `node_id` 永久绑定）。**iPad 不参与 Agent 对话、不能改正文。**
+iPad 端只能：拖动布局、改 title、删除非 CENTER 节点、**修改任意节点形状**、Apple Pencil 手写（ink 按 `node_id` 永久绑定）。**iPad 不参与 Agent 对话、不能改正文。**
+
+> **节点形状（shape，协议 v4 / schema v6 起）**：shape 与 kind 正交——`SQUARE`（方形）/ `CIRCLE`（圆形）/ `TRIANGLE`（三角形），**任意节点含 CENTER 都可改**。
+> 新建默认：CENTER→SQUARE，EXPLANATION/TEMPORARY→CIRCLE；旧图迁移后保持原视觉（旧 TEMPORARY=TRIANGLE）。
+> 用户说"把某节点改成圆形/三角形"时：iPad 端直接在节点面板改；Agent 侧用 `node.set-shape`（`{"node_id","shape","base_node_revision"}`）。改 shape 不改变 kind/parent/body/layout。
 
 ## 六、Agent 启动时
 

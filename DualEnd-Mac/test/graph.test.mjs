@@ -57,19 +57,20 @@ before(() => {
 after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('store 基础', () => {
-  test('integrity ok & schema_version=5', () => {
+  test('integrity ok & schema_version=6', () => {
     const ic = store.integrity();
     assert.equal(ic.integrity, 'ok');
     assert.equal(ic.fk_violations, 0);
-    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '5');
+    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '6');
     assert.ok(store.prepare('PRAGMA table_info(nodes)').all().some((column) => column.name === 'parent_node_id'));
   });
-  test('v3 migration preserves IDs/layout/ink, backfills parent, and converts legacy layout', () => {
+  test('v3 migration preserves IDs/layout/ink, backfills parent+shape, and converts legacy layout', () => {
     const legacyPath = join(dir, 'legacy-v3.db');
     const legacy = new DatabaseSync(legacyPath);
     const legacyDdl = DDL
       .replace('  x_world REAL NOT NULL,\n  y_world REAL NOT NULL,\n', '')
       .replace('  parent_node_id TEXT REFERENCES nodes(node_id),\n', '')
+      .replace("  shape TEXT NOT NULL DEFAULT 'SQUARE' CHECK(shape IN ('SQUARE','CIRCLE','TRIANGLE')),\n", '')
       .replace('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id);\n', '');
     legacy.exec(legacyDdl);
     const now = '2026-09-16T00:00:00.000Z';
@@ -77,10 +78,14 @@ describe('store 基础', () => {
     legacy.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('created_at', now);
     legacy.prepare(`INSERT INTO graphs(graph_id,question_key,question_source,source_id,probe_key,graph_revision,center_node_id,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)`).run('legacy-graph', 'qb:legacy', 'QUESTION_BANK', 'legacy', null, 1, 'legacy-center', now, now);
+    legacy.prepare(`INSERT INTO rounds(round_id,graph_id,status,opened_at) VALUES (?,?,?,?)`)
+      .run('legacy-round', 'legacy-graph', 'ACTIVE', now);
     legacy.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
       VALUES (?,?,?,?,?,?,NULL,1,?)`).run('legacy-center', 'legacy-graph', 'CENTER', '旧题', '旧题正文', 'a'.repeat(64), now);
     legacy.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
       VALUES (?,?,?,?,?,?,NULL,1,?)`).run('legacy-explanation', 'legacy-graph', 'EXPLANATION', '旧解释', '旧解释正文', 'b'.repeat(64), now);
+    legacy.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
+      VALUES (?,?,?,?,?,?,?,1,?)`).run('legacy-temporary', 'legacy-graph', 'TEMPORARY', '旧临时', '旧临时正文', 'd'.repeat(64), 'legacy-round', now);
     legacy.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,?)')
       .run('legacy-center', 0.5, 0.5, 1, 0, now);
     legacy.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,?)')
@@ -90,7 +95,7 @@ describe('store 基础', () => {
     legacy.close();
 
     const migrated = new StateDb(legacyPath);
-    assert.equal(migrated.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '5');
+    assert.equal(migrated.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '6');
     assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-center').parent_node_id, null);
     assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-explanation').parent_node_id, 'legacy-center');
     assert.equal(migrated.prepare('SELECT layout_revision FROM layouts WHERE node_id=?').get('legacy-explanation').layout_revision, 2);
@@ -98,6 +103,10 @@ describe('store 基础', () => {
     assert.ok(Math.abs(layout.x_world - 200) < 0.000001);
     assert.ok(Math.abs(layout.y_world + 140) < 0.000001);
     assert.equal(migrated.prepare('SELECT ink_revision FROM ink WHERE node_id=?').get('legacy-explanation').ink_revision, 1);
+    // v6 shape 迁移默认（保持旧视觉；注意旧 TEMPORARY → TRIANGLE 与新建默认 CIRCLE 不同）
+    assert.equal(migrated.prepare('SELECT shape FROM nodes WHERE node_id=?').get('legacy-center').shape, 'SQUARE');
+    assert.equal(migrated.prepare('SELECT shape FROM nodes WHERE node_id=?').get('legacy-explanation').shape, 'CIRCLE');
+    assert.equal(migrated.prepare('SELECT shape FROM nodes WHERE node_id=?').get('legacy-temporary').shape, 'TRIANGLE');
     assert.deepEqual(migrated.integrity(), { integrity: 'ok', fk_violations: 0 });
     migrated.close();
   });

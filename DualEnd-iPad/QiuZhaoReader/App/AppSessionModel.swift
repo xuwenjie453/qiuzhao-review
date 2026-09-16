@@ -199,6 +199,16 @@ final class AppSessionModel: ObservableObject {
         }
         graphState.managedNodeId = nil
     }
+    /// v6: shape 修改 —— 任意节点（含 CENTER）可选任意形状；本地乐观更新随后走 outbox 重放。
+    func setShape(nodeId: String, shape: NodeShape) {
+        guard let snap = graphState.snapshot,
+              let node = snap.nodes.first(where: { $0.nodeId == nodeId }) else { return }
+        Task {
+            await store.localSetShape(nodeId: nodeId, shape: shape, baseNodeRevision: node.nodeRevision)
+            sync.pushLocalMutation()
+        }
+        graphState.managedNodeId = nil
+    }
     func didEnterReader(nodeId: String) { /* ink flush 生命周期由 ReaderHost 处理 */ }
 
     // MARK: - Canonical graph merge / optimistic move lifecycle
@@ -301,6 +311,7 @@ struct RootView: View {
                 if let node = currentNode(route.nodeId) {
                     NodeManageSheet(node: node,
                                     onRename: { model.rename(nodeId: node.nodeId, title: $0) },
+                                    onSetShape: { model.setShape(nodeId: node.nodeId, shape: $0) },
                                     onDelete: { model.delete(nodeId: node.nodeId) })
                         // .sheet(item:) 复用承载视图时强制按 node_id 重建，
                         // 防止从新节点点回 CENTER 仍显示上一个节点内容。
@@ -364,13 +375,15 @@ struct FirstLaunchPermissionView: View {
     }
 }
 
-// MARK: - Single-tap 管理 sheet: title / kind / status / delete(CENTER 不出现)
+// MARK: - Single-tap 管理 sheet: title / 形状 / 类型 / status / delete(CENTER 不出现)
 struct NodeManageSheet: View {
     let node: GraphNodeDTO
     let onRename: (String) -> Void
+    let onSetShape: (NodeShape) -> Void
     let onDelete: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var title: String = ""
+    @State private var selectedShape: NodeShape?
     @State private var showDeleteWarning = false
 
     var body: some View {
@@ -378,7 +391,19 @@ struct NodeManageSheet: View {
             Form {
                 Section("标题（最多 80 字符）") {
                     TextField("节点标题", text: $title)
-                        .onAppear { title = node.title }
+                        .onAppear { title = node.title; selectedShape = node.resolvedShape }
+                }
+                Section("形状") {
+                    // 任意节点（含 CENTER）可选任意形状；shape 与 kind 相互独立。
+                    Picker("形状", selection: Binding(
+                        get: { selectedShape ?? node.resolvedShape },
+                        set: { selectedShape = $0 }
+                    )) {
+                        Text("□ 方形").tag(NodeShape.SQUARE)
+                        Text("○ 圆形").tag(NodeShape.CIRCLE)
+                        Text("△ 三角形").tag(NodeShape.TRIANGLE)
+                    }
+                    .pickerStyle(.segmented)
                 }
                 Section {
                     HStack { Text("类型"); Spacer(); Text(kindName).foregroundColor(.secondary) }
@@ -401,6 +426,7 @@ struct NodeManageSheet: View {
                     Button("保存") {
                         let t = title.trimmingCharacters(in: .whitespaces)
                         if !t.isEmpty && t != node.title { onRename(t) }
+                        if let s = selectedShape, s != node.resolvedShape { onSetShape(s) }
                         dismiss()
                     }
                 }
@@ -419,11 +445,12 @@ struct NodeManageSheet: View {
                  : "删除后该节点将从当前问题图中移除。")
         }
     }
+    /// 只描述业务语义；视觉形状由「形状」选择器独立表达（kind≠shape）。
     private var kindName: String {
         switch node.kind {
-        case .CENTER: return "CENTER · 方形"
-        case .EXPLANATION: return "EXPLANATION · 圆形"
-        case .TEMPORARY: return "TEMPORARY · 三角形"
+        case .CENTER: return "CENTER · 题目中心"
+        case .EXPLANATION: return "EXPLANATION · 解释"
+        case .TEMPORARY: return "TEMPORARY · 本轮临时"
         }
     }
 }

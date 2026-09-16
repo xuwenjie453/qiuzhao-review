@@ -15,6 +15,7 @@ enum GraphCodec {
             parentNodeId: dict["parent_node_id"]?.string,
             visibility: visibility,
             kind: kind,
+            shape: (dict["shape"]?.string).flatMap(NodeShape.init(rawValue:)),
             title: dict["title"]?.string ?? "",
             bodyMarkdown: dict["body_markdown"]?.string ?? "",
             nodeRevision: dict["node_revision"]?.number.map { Int($0) } ?? 1,

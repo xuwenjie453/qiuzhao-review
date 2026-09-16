@@ -18,6 +18,7 @@ final actor ClientStore {
     CREATE TABLE IF NOT EXISTS nodes_cache(
       node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, owner_graph_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL,
       parent_node_id TEXT,
+      shape TEXT,
       body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL,
       x_world REAL NOT NULL, y_world REAL NOT NULL,
       x_norm REAL, y_norm REAL,
@@ -55,6 +56,18 @@ final actor ClientStore {
         if !nodeCols.contains("parent_node_id") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN parent_node_id TEXT") }
         if !nodeCols.contains("x_world") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN x_world REAL") }
         if !nodeCols.contains("y_world") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN y_world REAL") }
+        if !nodeCols.contains("shape") {
+            try? db.exec("ALTER TABLE nodes_cache ADD COLUMN shape TEXT")
+            // v6 迁移默认（保持旧视觉；与新建默认不同，尤其 TEMPORARY）：
+            try? db.exec("""
+                UPDATE nodes_cache SET shape = CASE kind
+                  WHEN 'CENTER' THEN 'SQUARE'
+                  WHEN 'EXPLANATION' THEN 'CIRCLE'
+                  WHEN 'TEMPORARY' THEN 'TRIANGLE'
+                  ELSE 'SQUARE' END
+                WHERE shape IS NULL
+                """)
+        }
         if !graphCols.contains("parent_graphs_json") { try? db.exec("ALTER TABLE graphs_cache ADD COLUMN parent_graphs_json TEXT NOT NULL DEFAULT '[]'") }
         if nodeCols.contains("x_norm") && nodeCols.contains("y_norm") {
             try? db.exec("UPDATE nodes_cache SET x_world=(x_norm - 0.5) * ?, y_world=(y_norm - 0.5) * ? WHERE x_world IS NULL OR y_world IS NULL",
@@ -121,6 +134,7 @@ final actor ClientStore {
                                 parentNodeId: row["parent_node_id"] as? String,
                                 visibility: NodeVisibility(rawValue: row["visibility"] as? String ?? "OWN") ?? .OWN,
                                 kind: kind,
+                                shape: (row["shape"] as? String).flatMap(NodeShape.init(rawValue:)),
                                 title: row["title"] as? String ?? "",
                                 bodyMarkdown: row["body_markdown"] as? String ?? "",
                                 nodeRevision: (row["node_revision"] as? Int64).map(Int.init) ?? 1,
@@ -174,8 +188,8 @@ final actor ClientStore {
             let x = (pendingMove ? local?["x_world"] as? Double : nil) ?? n.layout.x
             let y = (pendingMove ? local?["y_world"] as? Double : nil) ?? n.layout.y
             let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
-            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
-                         [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.parentNodeId, n.kind.rawValue, title, n.bodyMarkdown, n.nodeRevision,
+            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,shape,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                         [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.parentNodeId, n.kind.rawValue, n.resolvedShape.rawValue, title, n.bodyMarkdown, n.nodeRevision,
                           x, y, legacy.x, legacy.y, n.layout.revision, Date().timeIntervalSince1970])
             try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                          [dto.graphId, n.nodeId, n.visibility.rawValue])
@@ -208,8 +222,8 @@ final actor ClientStore {
             case "ADD_NODE":
                 guard let nv = op["node"]?.dict, let n = GraphCodec.node(from: nv) else { continue }
                 let legacy = GraphWorldSpace.worldToLegacyNormalized(x: n.layout.x, y: n.layout.y)
-                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
-                    [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.parentNodeId, n.kind.rawValue, n.title, n.bodyMarkdown, n.nodeRevision,
+                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,shape,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                    [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.parentNodeId, n.kind.rawValue, n.resolvedShape.rawValue, n.title, n.bodyMarkdown, n.nodeRevision,
                      n.layout.x, n.layout.y, legacy.x, legacy.y, n.layout.revision, Date().timeIntervalSince1970])
                 try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                              [graphId, n.nodeId, n.visibility.rawValue])
@@ -217,6 +231,11 @@ final actor ClientStore {
             case "UPDATE_TITLE":
                 guard let nid = op["node_id"]?.string, let title = op["title"]?.string else { continue }
                 try? db.exec("UPDATE nodes_cache SET title=?, updated_at=? WHERE node_id=?", [title, Date().timeIntervalSince1970, nid])
+            case "UPDATE_SHAPE":
+                guard let nid = op["node_id"]?.string, let shapeRaw = op["shape"]?.string,
+                      NodeShape(rawValue: shapeRaw) != nil else { continue }
+                try? db.exec("UPDATE nodes_cache SET shape=?, node_revision=?, updated_at=? WHERE node_id=?",
+                             [shapeRaw, op["node_revision"]?.number.map { Int($0) } ?? 0, Date().timeIntervalSince1970, nid])
             case "UPDATE_LAYOUT":
                 guard let nid = op["node_id"]?.string, let lv = op["layout"]?.dict else { continue }
                 let x = lv["x"]?.number ?? 0
@@ -280,6 +299,18 @@ final actor ClientStore {
                         payload: ["command_id": messageId, "kind": "RENAME_NODE",
                                   "graph_id": currentGraphId() ?? "",
                                   "payload": ["node_id": nodeId, "title": title, "base_node_revision": baseNodeRevision]])
+        db.commit()
+    }
+    /// v6: shape 修改走与 rename 相同的 durable 纪律：先写本地 DB → outbox → 网络重放。
+    func localSetShape(nodeId: String, shape: NodeShape, baseNodeRevision: Int) {
+        db.begin(); defer { db.rollback() }
+        try? db.exec("UPDATE nodes_cache SET shape=?, updated_at=? WHERE node_id=? AND locally_deleted=0",
+                     [shape.rawValue, Date().timeIntervalSince1970, nodeId])
+        let messageId = UUID().uuidString.lowercased()
+        queueOutboxInTx(messageId: messageId, kind: "SET_NODE_SHAPE", entityId: nodeId,
+                        payload: ["command_id": messageId, "kind": "SET_NODE_SHAPE",
+                                  "graph_id": currentGraphId() ?? "",
+                                  "payload": ["node_id": nodeId, "shape": shape.rawValue, "base_node_revision": baseNodeRevision]])
         db.commit()
     }
     /// Persists the move and returns the generated command id so the UI can

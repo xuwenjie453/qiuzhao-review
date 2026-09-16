@@ -67,10 +67,11 @@ export class SyncSession extends EventEmitter {
     }
     this.deviceId = String(p.device_id);
     this.protocol = Math.max(...p.supported_protocols.filter((v) => SUPPORTED_PROTOCOLS.includes(v)));
-    // WORLD_V1 的 layout.x/y 已不再是 [0,1] 归一化数。旧客户端会把它
-    // 误画到屏幕外，因此必须在发送任何 snapshot 前要求升级。
-    if (this.protocol < 3) {
-      this.send(MSG.COMMAND_REJECTED, { reason: 'UPGRADE_REQUIRED', required_protocol: 3 });
+    // 最低协议要求 = 4：v4 起 node 携带 canonical `shape`（与 kind 正交）。
+    // 旧客户端只会按 kind 固定渲染、看不懂 shape，会出现“服务端形状已改但端上不显示”
+    // 的语义分叉；WORLD_V1 坐标（v3 起）同样不再向后兼容。两者合并为同一守卫。
+    if (this.protocol < 4) {
+      this.send(MSG.COMMAND_REJECTED, { reason: 'UPGRADE_REQUIRED', required_protocol: 4 });
       this.conn.close(1002);
       return;
     }
@@ -184,6 +185,9 @@ export class SyncSession extends EventEmitter {
         case 'RENAME_NODE':
           return this.svc.renameNode({ command_id: cmdId, node_id: payload.node_id,
             title: payload.title, base_node_revision: payload.base_node_revision, actor: 'IPAD' });
+        case 'SET_NODE_SHAPE':
+          return this.svc.setNodeShape({ command_id: cmdId, node_id: payload.node_id,
+            shape: payload.shape, base_node_revision: payload.base_node_revision, actor: 'IPAD' });
         case 'MOVE_NODE':
           return this.svc.moveNode({ command_id: cmdId, node_id: payload.node_id,
             x_world: payload.x_world, y_world: payload.y_world,

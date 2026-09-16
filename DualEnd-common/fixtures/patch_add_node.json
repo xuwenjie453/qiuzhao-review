@@ -1,5 +1,5 @@
 {
- "v": 1,
+ "v": 4,
  "message_id": "f-patch-1",
  "type": "GRAPH_PATCH",
  "session_epoch": "e-1",
@@ -21,7 +21,8 @@
       "x": 0.3,
       "y": 0.3,
       "revision": 1
-     }
+     },
+     "shape": "TRIANGLE"
     }
    }
   ]

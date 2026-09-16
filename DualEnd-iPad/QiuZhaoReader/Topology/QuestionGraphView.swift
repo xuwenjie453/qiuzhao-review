@@ -13,13 +13,15 @@ enum TopologyLayout {
     }
 }
 
+/// 节点视觉形状 —— 只由 canonical `shape` 驱动（v4/v6 起 kind 与 shape 正交）。
+/// 本类型不得 switch/import NodeKind。
 struct NodeGlyph: Shape {
-    let kind: NodeKind
+    let shape: NodeShape
     func path(in rect: CGRect) -> Path {
-        switch kind {
-        case .CENTER: return Path(rect)
-        case .EXPLANATION: return Path(ellipseIn: rect)
-        case .TEMPORARY:
+        switch shape {
+        case .SQUARE: return Path(rect)
+        case .CIRCLE: return Path(ellipseIn: rect)
+        case .TRIANGLE:
             var p = Path()
             p.move(to: CGPoint(x: rect.midX, y: rect.minY))
             p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
@@ -121,7 +123,8 @@ struct NodeShapeView: View {
         .onTapGesture { onTap() }
     }
 
-    private var glyph: NodeGlyph { NodeGlyph(kind: node.kind) }
+    // 渲染只读 canonical shape（缺失时由 resolvedShape 做迁移默认兜底）。
+    private var glyph: NodeGlyph { NodeGlyph(shape: node.resolvedShape) }
     private var fillColor: Color {
         switch node.kind {
         case .CENTER: return .blue.opacity(0.22)
