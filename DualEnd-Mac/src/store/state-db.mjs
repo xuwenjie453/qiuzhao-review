@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS nodes(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_center_per_graph
   ON nodes(graph_id) WHERE kind='CENTER' AND deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id);
 CREATE TABLE IF NOT EXISTS layouts(
   node_id TEXT PRIMARY KEY REFERENCES nodes(node_id),
   x_norm REAL NOT NULL,
@@ -124,6 +123,7 @@ export class StateDb {
   _migrate() {
     const row = this.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version');
     if (!row) {
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id)');
       this.db.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('schema_version', String(SCHEMA_VERSION));
       this.db.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('created_at', nowIso());
       return;
@@ -203,6 +203,8 @@ export class StateDb {
         try { this.db.exec('ROLLBACK'); } catch {}
         throw e;
       }
+    } else {
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id)');
     }
   }
 
