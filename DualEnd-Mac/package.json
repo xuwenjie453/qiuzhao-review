@@ -11,6 +11,6 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "test": "node --test test/graph.test.mjs test/bridge-e2e.test.mjs test/fixtures.test.mjs test/idempotency.test.mjs"
+    "test": "node --test test/graph.test.mjs test/hierarchy.test.mjs test/bridge-e2e.test.mjs test/fixtures.test.mjs test/idempotency.test.mjs"
   }
 }
