@@ -64,13 +64,16 @@ test('3-4. question.open → iPad 收到 GRAPH_SNAPSHOT(含 CENTER)', async () =
   assert.equal(snap.payload.nodes.find((n) => n.kind === 'CENTER').body_markdown, 'Redis过期删除策略是什么？');
 });
 
-test('5. graph.add-node(EXPLANATION) → GRAPH_PATCH ADD_NODE', async () => {
+test('5. graph.add-node(EXPLANATION) → GRAPH_PATCH ADD_NODE（含 parent_node_id）', async () => {
   const r = await openQuestion();
+  const snapshot = await fetch(`http://127.0.0.1:${controlPort}/graph/snapshot`).then((response) => response.json());
+  const center = snapshot.nodes.find((node) => node.kind === 'CENTER');
   const patch = client.waitJson((m) => m.type === 'GRAPH_PATCH');
-  const addRes = await localCommand({ command_id: uid(), kind: 'graph.add-node', round_id: r.round_id, node_kind: 'EXPLANATION', ai_title: '惰性与定期删除', body_markdown: '惰性删除每次取时检查过期; 定期删除周期扫库' });
+  const addRes = await localCommand({ command_id: uid(), kind: 'graph.add-node', round_id: r.round_id, node_kind: 'EXPLANATION', parent_node_id: center.node_id, ai_title: '惰性与定期删除', body_markdown: '惰性删除每次取时检查过期; 定期删除周期扫库' });
   assert.ok(addRes.node_id);
+  assert.equal(addRes.parent_node_id, center.node_id);
   const p = await patch;
-  assert.ok(p.payload.ops.some((o) => o.op === 'ADD_NODE' && o.node.kind === 'EXPLANATION'));
+  assert.ok(p.payload.ops.some((o) => o.op === 'ADD_NODE' && o.node.kind === 'EXPLANATION' && o.node.parent_node_id === center.node_id));
 });
 
 test('6. CLIENT_COMMAND move → COMMAND_ACK(canonical) + patch', async () => {

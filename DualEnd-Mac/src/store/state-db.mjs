@@ -6,7 +6,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { nowIso } from '../util.mjs';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const DDL = `
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -44,6 +44,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_round ON rounds(status) WHERE statu
 CREATE TABLE IF NOT EXISTS nodes(
   node_id TEXT PRIMARY KEY,
   graph_id TEXT NOT NULL REFERENCES graphs(graph_id),
+  parent_node_id TEXT REFERENCES nodes(node_id),
   kind TEXT NOT NULL CHECK(kind IN ('CENTER','EXPLANATION','TEMPORARY')),
   title TEXT NOT NULL,
   body_markdown TEXT NOT NULL,
@@ -118,6 +119,8 @@ export class StateDb {
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec(DDL);
     this._migrate();
+    // 旧 v3 库在 migration 前没有 parent column，故不能放进上面的通用 DDL。
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id)');
   }
 
   _migrate() {
@@ -183,6 +186,26 @@ export class StateDb {
         throw e;
       } finally {
         this.db.exec('PRAGMA foreign_keys = ON');
+      }
+    }
+    if (current < 4) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const columns = this.db.prepare('PRAGMA table_info(nodes)').all().map((c) => c.name);
+        if (!columns.includes('parent_node_id')) {
+          this.db.exec('ALTER TABLE nodes ADD COLUMN parent_node_id TEXT REFERENCES nodes(node_id)');
+        }
+        // 旧图一直按 CENTER → child 渲染。回填后视觉结构不变，且不会丢失历史 node/layout/ink ID。
+        this.db.exec(`UPDATE nodes
+          SET parent_node_id=(SELECT center_node_id FROM graphs g WHERE g.graph_id=nodes.graph_id)
+          WHERE kind<>'CENTER' AND parent_node_id IS NULL`);
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id)');
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('4', 'schema_version');
+        this.db.exec('COMMIT');
+        current = 4;
+      } catch (e) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw e;
       }
     }
   }

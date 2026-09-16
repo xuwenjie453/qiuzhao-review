@@ -135,7 +135,7 @@ export class QuestionGraphService {
     if (!g) return null;
     const nodes = this.visibleNodes(graphId, roundId).map((n) => ({
       node_id: n.node_id, owner_graph_id: n.owner_graph_id, visibility: n.visibility,
-      kind: n.kind, title: n.title,
+      parent_node_id: n.parent_node_id, kind: n.kind, title: n.title,
       body_markdown: n.body_markdown, node_revision: n.node_revision,
       layout: { x: n.x_norm ?? 0.5, y: n.y_norm ?? 0.5, revision: n.layout_revision ?? 1 },
     }));
@@ -175,8 +175,8 @@ export class QuestionGraphService {
                             VALUES (?,?,?,?,?,1,?,?,?)`)
           .run(graphId, identityKey, question_ref.source, question_ref.source_id ?? '',
                question_ref.probe_key ?? null, centerId, now, now);
-        this.store.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
-                            VALUES (?,?,?,?,?,?,NULL,1,?)`)
+        this.store.prepare(`INSERT INTO nodes(node_id,graph_id,parent_node_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
+                            VALUES (?,?,NULL,?,?,?,?,NULL,1,?)`)
           .run(centerId, graphId, 'CENTER', String(ai_title).trim(), question_body_markdown,
                sha256hex(question_body_markdown), now);
         this.store.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,0.5,0.5,1,0,?)')
@@ -236,7 +236,7 @@ export class QuestionGraphService {
   }
 
   /** node.add: 仅用户显式; EXPLANATION 永久(round_id NULL), TEMPORARY 绑 round。 */
-  addNode({ command_id, round_id, kind, ai_title, body_markdown, origin_turn_ref, actor = 'AGENT' }) {
+  addNode({ command_id, round_id, kind, ai_title, body_markdown, parent_node_id, origin_turn_ref, actor = 'AGENT' }) {
     assert(kind === 'EXPLANATION' || kind === 'TEMPORARY', ERR.KIND_FORBIDDEN, '只能加 EXPLANATION/TEMPORARY');
     assert(titleValid(ai_title), ERR.VALIDATION, 'title 非法');
     assert(typeof body_markdown === 'string' && body_markdown.length > 0, ERR.VALIDATION, 'body 为空');
@@ -246,11 +246,23 @@ export class QuestionGraphService {
       if (dup) return dup;
       const round = this.store.prepare("SELECT * FROM rounds WHERE round_id=? AND status='ACTIVE'").get(round_id);
       assert(round, ERR.ROUND_NOT_ACTIVE, '需要 ACTIVE round');
+      const graph = this.graphGet(round.graph_id);
+      const explicitParent = parent_node_id !== undefined && parent_node_id !== null;
+      let resolvedParentId = graph.center_node_id;
+      if (kind === 'TEMPORARY') {
+        assert(!explicitParent, ERR.VALIDATION, 'TEMPORARY 不支持指定 parent_node_id');
+      } else if (explicitParent) {
+        const parent = this.nodeGet(parent_node_id);
+        assert(parent && !parent.deleted_at, ERR.NODE_NOT_FOUND, 'parent_node_id 不存在或已删除');
+        assert(parent.graph_id === round.graph_id, ERR.VALIDATION, 'parent_node_id 必须属于当前 canonical graph');
+        assert(parent.kind === 'CENTER' || parent.kind === 'EXPLANATION', ERR.VALIDATION, 'parent_node_id 只能是 CENTER 或 EXPLANATION');
+        resolvedParentId = parent.node_id;
+      }
       const now = nowIso();
       const nodeId = uuid();
-      this.store.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,origin_turn_ref,created_at)
-                          VALUES (?,?,?,?,?,?,?,1,?,?)`)
-        .run(nodeId, round.graph_id, kind, String(ai_title).trim(), body_markdown,
+      this.store.prepare(`INSERT INTO nodes(node_id,graph_id,parent_node_id,kind,title,body_markdown,body_sha256,round_id,node_revision,origin_turn_ref,created_at)
+                          VALUES (?,?,?,?,?,?,?,?,1,?,?)`)
+        .run(nodeId, round.graph_id, resolvedParentId, kind, String(ai_title).trim(), body_markdown,
              sha256hex(body_markdown), kind === 'TEMPORARY' ? round.round_id : null,
              origin_turn_ref ?? null, now);
       const { x, y } = this._radialSlot(round.graph_id, kind === 'TEMPORARY' ? round.round_id : null);
@@ -261,7 +273,7 @@ export class QuestionGraphService {
         .run(now, g.graph_id);
       const affected = this.descendantGraphIds(round.graph_id);
       for (const gid of affected.slice(1)) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
-      const result = { graph_id: round.graph_id, affected_graph_ids: affected, round_id: round.round_id, node_id: nodeId, kind,
+      const result = { graph_id: round.graph_id, affected_graph_ids: affected, round_id: round.round_id, node_id: nodeId, parent_node_id: resolvedParentId, kind,
                        graph_revision: g.graph_revision + 1, graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])), node_revision: 1,
                        layout: { x, y, revision: 1 } };
       this.store.dedupPut(command_id, result);

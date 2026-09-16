@@ -5,7 +5,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { StateDb } from '../src/store/state-db.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { StateDb, DDL } from '../src/store/state-db.mjs';
 import { QuestionGraphService } from '../src/graph/question-graph-service.mjs';
 import { AppError, ERR } from '../src/util.mjs';
 
@@ -56,11 +57,45 @@ before(() => {
 after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('store 基础', () => {
-  test('integrity ok & schema_version=3', () => {
+  test('integrity ok & schema_version=4', () => {
     const ic = store.integrity();
     assert.equal(ic.integrity, 'ok');
     assert.equal(ic.fk_violations, 0);
-    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '3');
+    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '4');
+    assert.ok(store.prepare('PRAGMA table_info(nodes)').all().some((column) => column.name === 'parent_node_id'));
+  });
+  test('v3 migration preserves IDs/layout/ink and backfills non-center parent', () => {
+    const legacyPath = join(dir, 'legacy-v3.db');
+    const legacy = new DatabaseSync(legacyPath);
+    const legacyDdl = DDL
+      .replace('  parent_node_id TEXT REFERENCES nodes(node_id),\n', '')
+      .replace('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id);\n', '');
+    legacy.exec(legacyDdl);
+    const now = '2026-09-16T00:00:00.000Z';
+    legacy.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('schema_version', '3');
+    legacy.prepare('INSERT INTO meta(key,value) VALUES (?,?)').run('created_at', now);
+    legacy.prepare(`INSERT INTO graphs(graph_id,question_key,question_source,source_id,probe_key,graph_revision,center_node_id,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run('legacy-graph', 'qb:legacy', 'QUESTION_BANK', 'legacy', null, 1, 'legacy-center', now, now);
+    legacy.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
+      VALUES (?,?,?,?,?,?,NULL,1,?)`).run('legacy-center', 'legacy-graph', 'CENTER', '旧题', '旧题正文', 'a'.repeat(64), now);
+    legacy.prepare(`INSERT INTO nodes(node_id,graph_id,kind,title,body_markdown,body_sha256,round_id,node_revision,created_at)
+      VALUES (?,?,?,?,?,?,NULL,1,?)`).run('legacy-explanation', 'legacy-graph', 'EXPLANATION', '旧解释', '旧解释正文', 'b'.repeat(64), now);
+    legacy.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,?)')
+      .run('legacy-center', 0.5, 0.5, 1, 0, now);
+    legacy.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,?)')
+      .run('legacy-explanation', 0.7, 0.3, 2, 1, now);
+    legacy.prepare('INSERT INTO ink(node_id,ink_revision,format,blob,blob_sha256,updated_at) VALUES (?,?,?,?,?,?)')
+      .run('legacy-explanation', 1, 'pkdrawing-v1', Buffer.from('ink'), 'c'.repeat(64), now);
+    legacy.close();
+
+    const migrated = new StateDb(legacyPath);
+    assert.equal(migrated.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '4');
+    assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-center').parent_node_id, null);
+    assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-explanation').parent_node_id, 'legacy-center');
+    assert.equal(migrated.prepare('SELECT layout_revision FROM layouts WHERE node_id=?').get('legacy-explanation').layout_revision, 2);
+    assert.equal(migrated.prepare('SELECT ink_revision FROM ink WHERE node_id=?').get('legacy-explanation').ink_revision, 1);
+    assert.deepEqual(migrated.integrity(), { integrity: 'ok', fk_violations: 0 });
+    migrated.close();
   });
   test('server_seq 单调且 message_id 唯一', () => {
     const s1 = store.journalUnique('msg-a', 'TEST', null, { a: 1 }).serverSeq;
@@ -134,7 +169,42 @@ describe('node.add 不变量', () => {
     const tpRow = store.prepare('SELECT * FROM nodes WHERE node_id=?').get(tp.node_id);
     assert.equal(exRow.round_id, null);
     assert.equal(tpRow.round_id, r.round_id);
+    assert.equal(tpRow.parent_node_id, store.prepare('SELECT center_node_id FROM graphs WHERE graph_id=?').get(r.graph_id).center_node_id);
     assert.equal(exRow.body_sha256.length, 64);
+  });
+  test('EXPLANATION 默认挂 CENTER，且可建立 CENTER → A → B 层级', () => {
+    const r = freshRound();
+    const g = store.prepare('SELECT * FROM graphs WHERE graph_id=?').get(r.graph_id);
+    const a = svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', ai_title: '第一层', body_markdown: 'A' });
+    const b = svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', parent_node_id: a.node_id, ai_title: '第二层', body_markdown: 'B' });
+    assert.equal(a.parent_node_id, g.center_node_id);
+    assert.equal(b.parent_node_id, a.node_id);
+    assert.equal(store.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get(a.node_id).parent_node_id, g.center_node_id);
+    assert.equal(store.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get(b.node_id).parent_node_id, a.node_id);
+    const snap = svc.snapshotPayload(r.graph_id, r.round_id);
+    assert.equal(snap.nodes.find((n) => n.node_id === b.node_id).parent_node_id, a.node_id);
+  });
+  test('非法 parent 不会静默回退到 CENTER', () => {
+    const r = freshRound();
+    const g = store.prepare('SELECT * FROM graphs WHERE graph_id=?').get(r.graph_id);
+    assert.throws(() => svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', parent_node_id: 'missing-parent', ai_title: 'missing', body_markdown: 'b' }),
+      (e) => e.code === ERR.NODE_NOT_FOUND);
+    const temporary = svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'TEMPORARY', ai_title: '临时父', body_markdown: 'b' });
+    assert.throws(() => svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', parent_node_id: temporary.node_id, ai_title: '非法临时父', body_markdown: 'b' }),
+      (e) => e.code === ERR.VALIDATION);
+    assert.throws(() => svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'TEMPORARY', parent_node_id: g.center_node_id, ai_title: '临时自定义父', body_markdown: 'b' }),
+      (e) => e.code === ERR.VALIDATION);
+    const removable = svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', ai_title: '待删除父', body_markdown: 'b' });
+    svc.deleteNode({ command_id: uid(), node_id: removable.node_id, base_node_revision: 1 });
+    assert.throws(() => svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', parent_node_id: removable.node_id, ai_title: '删除父', body_markdown: 'b' }),
+      (e) => e.code === ERR.NODE_NOT_FOUND);
+  });
+  test('其他 canonical graph 的 parent 被拒绝', () => {
+    const first = freshRound();
+    const foreign = svc.addNode({ command_id: uid(), round_id: first.round_id, kind: 'EXPLANATION', ai_title: '外图父', body_markdown: 'b' });
+    const other = svc.open({ command_id: uid(), question_ref: { source: 'QUESTION_BANK', question_key: 'qb:other-parent-graph', source_id: 'other-parent-graph' }, question_body_markdown: 'other', ai_title: '其他图' });
+    assert.throws(() => svc.addNode({ command_id: uid(), round_id: other.round_id, kind: 'EXPLANATION', parent_node_id: foreign.node_id, ai_title: '跨图子', body_markdown: 'b' }),
+      (e) => e.code === ERR.VALIDATION);
   });
 });
 
@@ -236,6 +306,7 @@ describe('QuestionGraph inheritance effective view', () => {
       source: 'QUESTION_BANK', question_key: 'qb:inherit-parent', source_id: 'inherit-parent'
     }, question_body_markdown: 'parent', ai_title: 'Parent' });
     const ex = svc.addNode({ command_id: uid(), round_id: parent.round_id, kind: 'EXPLANATION', ai_title: 'Shared', body_markdown: 'body' });
+    const nested = svc.addNode({ command_id: uid(), round_id: parent.round_id, kind: 'EXPLANATION', parent_node_id: ex.node_id, ai_title: 'Shared child', body_markdown: 'nested body' });
     const child = openReview('inherit-probe');
     svc.setInheritance({ command_id: uid(), child_graph_id: child.graph_id, parent_graph_id: parent.graph_id });
     const snap = svc.snapshotPayload(child.graph_id, child.round_id);
@@ -243,6 +314,8 @@ describe('QuestionGraph inheritance effective view', () => {
     const inherited = snap.nodes.find((n) => n.node_id === ex.node_id);
     assert.equal(inherited.visibility, 'INHERITED');
     assert.equal(inherited.owner_graph_id, parent.graph_id);
+    assert.equal(inherited.parent_node_id, parent.center_node_id); // source CENTER 在 Review effective view 中不可见，交由客户端展示层 fallback
+    assert.equal(snap.nodes.find((n) => n.node_id === nested.node_id).parent_node_id, ex.node_id); // inherited hierarchy 保留 raw parent
     const renamed = svc.renameNode({ command_id: uid(), node_id: ex.node_id, title: 'Shared 2', base_node_revision: 1 });
     assert.deepEqual(renamed.affected_graph_ids, [parent.graph_id, child.graph_id]);
     assert.equal(svc.snapshotPayload(child.graph_id, child.round_id).nodes.find((n) => n.node_id === ex.node_id).title, 'Shared 2');
