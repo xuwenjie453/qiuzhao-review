@@ -8,14 +8,20 @@ enum GraphCodec {
               let kind = NodeKind(rawValue: kindRaw) else { return nil }
         let layoutD = dict["layout"]?.dict
         let visibility: NodeVisibility
-        if let raw = dict["visibility"]?.string { guard let parsed = NodeVisibility(rawValue: raw) else { return nil }; visibility = parsed }
-        else { visibility = .OWN }
+        if let raw = dict["visibility"]?.string {
+            guard let parsed = NodeVisibility(rawValue: raw) else { return nil }
+            visibility = parsed
+        } else {
+            visibility = .OWN
+        }
         return GraphNodeDTO(
-            nodeId: nodeId, ownerGraphId: dict["owner_graph_id"]?.string,
+            nodeId: nodeId,
+            ownerGraphId: dict["owner_graph_id"]?.string,
             visibility: visibility,
             kind: kind,
             title: dict["title"]?.string ?? "",
             bodyMarkdown: dict["body_markdown"]?.string ?? "",
+            parentNodeId: dict["parent_node_id"]?.string,
             nodeRevision: dict["node_revision"]?.number.map { Int($0) } ?? 1,
             layout: LayoutDTO(
                 x: layoutD?["x"]?.number ?? 0.5,
