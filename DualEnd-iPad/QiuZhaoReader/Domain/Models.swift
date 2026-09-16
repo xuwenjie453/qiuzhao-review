@@ -43,6 +43,7 @@ struct GraphNodeDTO: Codable, Identifiable, Equatable {
     var id: String { nodeId }
     let nodeId: String
     let ownerGraphId: String?
+    let parentNodeId: String?
     let visibility: NodeVisibility
     let kind: NodeKind
     var title: String
@@ -52,13 +53,13 @@ struct GraphNodeDTO: Codable, Identifiable, Equatable {
 
     var isCenter: Bool { kind == .CENTER }
     enum CodingKeys: String, CodingKey {
-        case nodeId = "node_id", ownerGraphId = "owner_graph_id", visibility, kind, title,
+        case nodeId = "node_id", ownerGraphId = "owner_graph_id", parentNodeId = "parent_node_id", visibility, kind, title,
              bodyMarkdown = "body_markdown", nodeRevision = "node_revision", layout
     }
 
-    init(nodeId: String, ownerGraphId: String? = nil, visibility: NodeVisibility = .OWN,
+    init(nodeId: String, ownerGraphId: String? = nil, parentNodeId: String? = nil, visibility: NodeVisibility = .OWN,
          kind: NodeKind, title: String, bodyMarkdown: String, nodeRevision: Int, layout: LayoutDTO) {
-        self.nodeId = nodeId; self.ownerGraphId = ownerGraphId; self.visibility = visibility
+        self.nodeId = nodeId; self.ownerGraphId = ownerGraphId; self.parentNodeId = parentNodeId; self.visibility = visibility
         self.kind = kind; self.title = title; self.bodyMarkdown = bodyMarkdown
         self.nodeRevision = nodeRevision; self.layout = layout
     }
@@ -83,6 +84,15 @@ struct GraphSnapshotDTO: Codable, Equatable {
 
     func center() -> GraphNodeDTO? { nodes.first { $0.nodeId == centerNodeId } }
     func visibleChildren() -> [GraphNodeDTO] { nodes.filter { $0.nodeId != centerNodeId } }
+    /// parent 缺失、已删除或来自不可见 source graph 时，仅在展示层回退当前 CENTER。
+    func resolvedParent(of node: GraphNodeDTO) -> GraphNodeDTO? {
+        guard !node.isCenter else { return nil }
+        if let parentNodeId = node.parentNodeId,
+           let parent = nodes.first(where: { $0.nodeId == parentNodeId }) {
+            return parent
+        }
+        return center()
+    }
     enum CodingKeys: String, CodingKey {
         case graphId = "graph_id", questionKey = "question_key", roundId = "round_id",
              revision, centerNodeId = "center_node_id", parentGraphs = "parent_graphs", nodes

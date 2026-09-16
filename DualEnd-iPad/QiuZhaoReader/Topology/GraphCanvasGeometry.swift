@@ -35,5 +35,31 @@ struct GraphCanvasGeometry: Equatable {
         return CGRect(x: p.x - size / 2, y: p.y - size / 2, width: size, height: size)
     }
 
+    /// viewport offset 只属于本地呈现层；canonical graph point 始终不含它。
+    func visualPoint(from graphPoint: CGPoint, viewportOffset: CGSize) -> CGPoint {
+        CGPoint(x: graphPoint.x + viewportOffset.width, y: graphPoint.y + viewportOffset.height)
+    }
+
+    func graphPoint(fromVisual visualPoint: CGPoint, viewportOffset: CGSize) -> CGPoint {
+        CGPoint(x: visualPoint.x - viewportOffset.width, y: visualPoint.y - viewportOffset.height)
+    }
+
+    func visualHitRect(at normalized: CGPoint, viewportOffset: CGSize, size: CGFloat = 88) -> CGRect {
+        hitRect(at: normalized, size: size).offsetBy(dx: viewportOffset.width, dy: viewportOffset.height)
+    }
+
+    /// 可把任一最边缘 node center 移到 viewport 中心，但不允许整个图被甩出可恢复范围。
+    func clampedViewportOffset(proposed: CGSize, nodeCenters: [CGPoint]) -> CGSize {
+        guard !nodeCenters.isEmpty else { return .zero }
+        let minX = nodeCenters.map(\.x).min() ?? 0
+        let maxX = nodeCenters.map(\.x).max() ?? 0
+        let minY = nodeCenters.map(\.y).min() ?? 0
+        let maxY = nodeCenters.map(\.y).max() ?? 0
+        let center = CGPoint(x: viewportSize.width / 2, y: viewportSize.height / 2)
+        let x = min(max(proposed.width, center.x - maxX), center.x - minX)
+        let y = min(max(proposed.height, center.y - maxY), center.y - minY)
+        return CGSize(width: x, height: y)
+    }
+
     private func clamp(_ value: CGFloat) -> CGFloat { min(1, max(0, value)) }
 }

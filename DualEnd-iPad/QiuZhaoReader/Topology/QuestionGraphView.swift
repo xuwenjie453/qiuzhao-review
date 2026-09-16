@@ -43,6 +43,7 @@ struct NodeShapeView: View {
     let node: GraphNodeDTO
     let normalized: CGPoint
     let geometry: GraphCanvasGeometry
+    let viewportOffset: CGSize
     let isSelected: Bool
     let onTap: () -> Void
     let onDoubleTap: () -> Void
@@ -56,6 +57,7 @@ struct NodeShapeView: View {
 
     var body: some View {
         let center = geometry.screenPoint(from: normalized)
+        let visualCenter = geometry.visualPoint(from: center, viewportOffset: viewportOffset)
         return ZStack {
             glyph
                 .fill(fillColor)
@@ -91,19 +93,21 @@ struct NodeShapeView: View {
                     guard !node.isCenter else { return }
                     if !isDragging {
                         // 保留按下点相对节点中心的偏移，避免节点吸附到触点。
-                        grabOffset = CGSize(width: center.x - value.location.x,
-                                            height: center.y - value.location.y)
+                        grabOffset = CGSize(width: visualCenter.x - value.location.x,
+                                            height: visualCenter.y - value.location.y)
                         isDragging = true
                     }
-                    let newCenter = CGPoint(x: value.location.x + grabOffset.width,
-                                            y: value.location.y + grabOffset.height)
-                    onDragChanged(geometry.normalizedPoint(from: newCenter))
+                    let newVisualCenter = CGPoint(x: value.location.x + grabOffset.width,
+                                                   y: value.location.y + grabOffset.height)
+                    let graphCenter = geometry.graphPoint(fromVisual: newVisualCenter, viewportOffset: viewportOffset)
+                    onDragChanged(geometry.normalizedPoint(from: graphCenter))
                 }
                 .onEnded { value in
                     guard !node.isCenter else { return }
-                    let newCenter = CGPoint(x: value.location.x + grabOffset.width,
-                                            y: value.location.y + grabOffset.height)
-                    let final = geometry.normalizedPoint(from: newCenter)
+                    let newVisualCenter = CGPoint(x: value.location.x + grabOffset.width,
+                                                   y: value.location.y + grabOffset.height)
+                    let graphCenter = geometry.graphPoint(fromVisual: newVisualCenter, viewportOffset: viewportOffset)
+                    let final = geometry.normalizedPoint(from: graphCenter)
                     isDragging = false
                     grabOffset = .zero
                     onDragEnded(final)
@@ -133,29 +137,47 @@ struct QuestionGraphView: View {
     let onBackgroundTap: () -> Void
     let onNodeDragChanged: (String, CGPoint) -> Void
     let onNodeDragEnded: (String, CGPoint) -> Void
+    @State private var committedCanvasOffset: CGSize = .zero
+    @GestureState private var canvasDragTranslation: CGSize = .zero
 
     private var geometry: GraphCanvasGeometry {
         GraphCanvasGeometry(viewportSize: containerSize)
     }
 
+    private var liveCanvasOffset: CGSize {
+        let proposed = CGSize(width: committedCanvasOffset.width + canvasDragTranslation.width,
+                              height: committedCanvasOffset.height + canvasDragTranslation.height)
+        return geometry.clampedViewportOffset(proposed: proposed, nodeCenters: baseNodeCenters)
+    }
+
+    private var baseNodeCenters: [CGPoint] {
+        state.snapshot?.nodes.map { point(for: $0) } ?? []
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if let snap = state.snapshot, let center = snap.center() {
-                ForEach(snap.visibleChildren(), id: \.nodeId) { child in
-                    ChildLink(start: point(for: center), end: point(for: child))
-                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                        .allowsHitTesting(false)
+            if let snap = state.snapshot, snap.center() != nil {
+                ZStack(alignment: .topLeading) {
+                    ForEach(snap.visibleChildren(), id: \.nodeId) { child in
+                        if let parent = snap.resolvedParent(of: child) {
+                            ChildLink(start: point(for: parent), end: point(for: child))
+                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    ForEach(snap.nodes, id: \.nodeId) { node in
+                        NodeShapeView(node: node,
+                                      normalized: normalizedPosition(for: node),
+                                      geometry: geometry,
+                                      viewportOffset: liveCanvasOffset,
+                                      isSelected: state.selectedNodeId == node.nodeId,
+                                      onTap: { onNodeTap(node.nodeId) },
+                                      onDoubleTap: { onNodeDoubleTap(node.nodeId) },
+                                      onDragChanged: { onNodeDragChanged(node.nodeId, $0) },
+                                      onDragEnded: { onNodeDragEnded(node.nodeId, $0) })
+                    }
                 }
-                ForEach(snap.nodes, id: \.nodeId) { node in
-                    NodeShapeView(node: node,
-                                  normalized: normalizedPosition(for: node),
-                                  geometry: geometry,
-                                  isSelected: state.selectedNodeId == node.nodeId,
-                                  onTap: { onNodeTap(node.nodeId) },
-                                  onDoubleTap: { onNodeDoubleTap(node.nodeId) },
-                                  onDragChanged: { onNodeDragChanged(node.nodeId, $0) },
-                                  onDragEnded: { onNodeDragEnded(node.nodeId, $0) })
-                }
+                .offset(liveCanvasOffset)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "square.stack.3d.up.slash")
@@ -172,14 +194,16 @@ struct QuestionGraphView: View {
         .frame(width: containerSize.width, height: containerSize.height, alignment: .topLeading)
         .contentShape(Rectangle())
         .coordinateSpace(name: "graph-canvas")
+        .simultaneousGesture(canvasPanGesture)
         // Parent gesture only clears when the touch is outside every node hit rect;
         // it never competes with the node gesture for a node touch.
         .simultaneousGesture(
             SpatialTapGesture(count: 1, coordinateSpace: .named("graph-canvas"))
                 .onEnded { value in
-                    if !containsNode(at: value.location) { onBackgroundTap() }
+                    if !containsNode(at: value.location, viewportOffset: liveCanvasOffset) { onBackgroundTap() }
                 }
         )
+        .onChange(of: state.snapshot?.graphId) { _, _ in committedCanvasOffset = .zero }
     }
 
     private func normalizedPosition(for node: GraphNodeDTO) -> CGPoint {
@@ -192,9 +216,26 @@ struct QuestionGraphView: View {
         geometry.screenPoint(from: normalizedPosition(for: node))
     }
 
-    private func containsNode(at location: CGPoint) -> Bool {
+    private func containsNode(at location: CGPoint, viewportOffset: CGSize) -> Bool {
         state.snapshot?.nodes.contains {
-            geometry.hitRect(at: normalizedPosition(for: $0)).contains(location)
+            geometry.visualHitRect(at: normalizedPosition(for: $0), viewportOffset: viewportOffset).contains(location)
         } ?? false
+    }
+
+    private var canvasPanGesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .named("graph-canvas"))
+            .updating($canvasDragTranslation) { value, translation, _ in
+                guard !containsNode(at: value.startLocation, viewportOffset: committedCanvasOffset) else {
+                    translation = .zero
+                    return
+                }
+                translation = value.translation
+            }
+            .onEnded { value in
+                guard !containsNode(at: value.startLocation, viewportOffset: committedCanvasOffset) else { return }
+                let proposed = CGSize(width: committedCanvasOffset.width + value.translation.width,
+                                      height: committedCanvasOffset.height + value.translation.height)
+                committedCanvasOffset = geometry.clampedViewportOffset(proposed: proposed, nodeCenters: baseNodeCenters)
+            }
     }
 }

@@ -44,6 +44,39 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(st.snapshot?.centerNodeId, "n0")
     }
 
+    func testSnapshotParentPersistsThroughDurableCacheReload() async {
+        var payload = sampleSnapshot()
+        guard case .array(var nodes)? = payload["nodes"], case .object(var child) = nodes[1] else {
+            return XCTFail("测试快照格式错误")
+        }
+        child["parent_node_id"] = .string("n0")
+        nodes[1] = .object(child)
+        payload["nodes"] = .array(nodes)
+        _ = await store.applySnapshot(payload: payload, messageId: "parent-snapshot")
+        let restored = await store.cachedGraphState()
+        XCTAssertEqual(restored.snapshot?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId, "n0")
+    }
+
+    func testLegacyNodesCacheMigratesAndAcceptsParentSnapshot() async {
+        let path = NSTemporaryDirectory() + "legacy-parent-\(UUID().uuidString).sqlite"
+        do {
+            let legacy = try XCTUnwrap(SQLiteDB(path: path))
+            try legacy.exec("CREATE TABLE nodes_cache(node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, owner_graph_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL, body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL, x_norm REAL NOT NULL, y_norm REAL NOT NULL, layout_revision INTEGER NOT NULL, locally_deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)")
+            try legacy.exec("INSERT INTO nodes_cache VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", ["n1", "g1", "g1", "EXPLANATION", "旧解释", "旧正文", 1, 0.7, 0.4, 1, 0, 0.0])
+        } catch { return XCTFail("构造旧缓存失败: \(error)") }
+        let migrated = ClientStore(dbPath: path)
+        var payload = sampleSnapshot()
+        guard case .array(var nodes)? = payload["nodes"], case .object(var child) = nodes[1] else {
+            return XCTFail("测试快照格式错误")
+        }
+        child["parent_node_id"] = .string("n0")
+        nodes[1] = .object(child)
+        payload["nodes"] = .array(nodes)
+        _ = await migrated.applySnapshot(payload: payload, messageId: "legacy-parent-snapshot")
+        let restored = await migrated.cachedGraphState()
+        XCTAssertEqual(restored.snapshot?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId, "n0")
+    }
+
     func testInboxDedup() async {
         _ = await store.applySnapshot(payload: sampleSnapshot(), messageId: "m-dup")
         _ = await store.applySnapshot(payload: sampleSnapshot(revision: 2), messageId: "m-dup")
@@ -57,10 +90,11 @@ final class StoreTests: XCTestCase {
         let ok = await store.applyPatch(payload: jval([
             "graph_id": "g1", "base_revision": 1, "target_revision": 2,
             "ops": [["op": "ADD_NODE", "node": ["node_id": "n2", "kind": "TEMPORARY", "title": "临时",
-                    "body_markdown": "b", "node_revision": 1, "layout": ["x": 0.3, "y": 0.3, "revision": 1]]]],
+                    "parent_node_id": "n1", "body_markdown": "b", "node_revision": 1, "layout": ["x": 0.3, "y": 0.3, "revision": 1]]]],
         ]), messageId: "m2")
         if case .applied(let dto) = ok {
             XCTAssertEqual(dto?.nodes.count, 3)
+            XCTAssertEqual(dto?.nodes.first(where: { $0.nodeId == "n2" })?.parentNodeId, "n1")
         } else { XCTFail("应 applied") }
         // base mismatch → 不盲 apply
         let bad = await store.applyPatch(payload: jval([
@@ -152,6 +186,19 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(snap?.centerNodeId, "n0")
         XCTAssertEqual(snap?.nodes.count, 2)
     }
+
+    func testGraphCodecDecodesOptionalParentAndOldPayload() {
+        let old = GraphCodec.snapshot(from: sampleSnapshot())
+        XCTAssertNil(old?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId)
+        var payload = sampleSnapshot()
+        guard case .array(var nodes)? = payload["nodes"], case .object(var child) = nodes[1] else {
+            return XCTFail("测试快照格式错误")
+        }
+        child["parent_node_id"] = .string("n0")
+        nodes[1] = .object(child)
+        payload["nodes"] = .array(nodes)
+        XCTAssertEqual(GraphCodec.snapshot(from: payload)?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId, "n0")
+    }
 }
 
 final class TopologyLogicTests: XCTestCase {
@@ -171,6 +218,31 @@ final class TopologyLogicTests: XCTestCase {
         let maxPoint = geometry.normalizedPoint(from: CGPoint(x: 5000, y: 5000))
         XCTAssertEqual(minPoint, CGPoint.zero)
         XCTAssertEqual(maxPoint, CGPoint(x: 1, y: 1))
+    }
+
+    func testCanvasViewportTransformAndClampAreLocalAndReversible() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let centers = [geometry.screenPoint(from: CGPoint(x: 0.1, y: 0.2)),
+                       geometry.screenPoint(from: CGPoint(x: 0.9, y: 0.8))]
+        let offset = geometry.clampedViewportOffset(proposed: CGSize(width: 99_999, height: -99_999), nodeCenters: centers)
+        let viewportCenter = CGPoint(x: 512, y: 384)
+        XCTAssertEqual(offset.width, viewportCenter.x - centers.map(\.x).min()!, accuracy: 0.0001)
+        XCTAssertEqual(offset.height, viewportCenter.y - centers.map(\.y).max()!, accuracy: 0.0001)
+        let graph = geometry.screenPoint(from: CGPoint(x: 0.37, y: 0.63))
+        let visual = geometry.visualPoint(from: graph, viewportOffset: offset)
+        XCTAssertEqual(geometry.graphPoint(fromVisual: visual, viewportOffset: offset), graph)
+        XCTAssertTrue(geometry.visualHitRect(at: CGPoint(x: 0.37, y: 0.63), viewportOffset: offset).contains(visual))
+    }
+
+    func testResolvedParentPreservesVisibleHierarchyAndFallsBackToCenter() {
+        let center = GraphNodeDTO(nodeId: "c", kind: .CENTER, title: "题目", bodyMarkdown: "q", nodeRevision: 1, layout: LayoutDTO(x: 0.5, y: 0.5, revision: 1))
+        let parent = GraphNodeDTO(nodeId: "a", parentNodeId: "c", kind: .EXPLANATION, title: "A", bodyMarkdown: "a", nodeRevision: 1, layout: LayoutDTO(x: 0.7, y: 0.5, revision: 1))
+        let child = GraphNodeDTO(nodeId: "b", parentNodeId: "a", kind: .EXPLANATION, title: "B", bodyMarkdown: "b", nodeRevision: 1, layout: LayoutDTO(x: 0.8, y: 0.6, revision: 1))
+        let hierarchy = GraphSnapshotDTO(graphId: "g", questionKey: "q", roundId: nil, revision: 1, centerNodeId: "c", nodes: [center, parent, child])
+        XCTAssertEqual(hierarchy.resolvedParent(of: child)?.nodeId, "a")
+        let missingParent = GraphNodeDTO(nodeId: "orphan", parentNodeId: "deleted", kind: .EXPLANATION, title: "孤儿", bodyMarkdown: "o", nodeRevision: 1, layout: LayoutDTO(x: 0.2, y: 0.2, revision: 1))
+        let fallback = GraphSnapshotDTO(graphId: "g", questionKey: "q", roundId: nil, revision: 1, centerNodeId: "c", nodes: [center, missingParent])
+        XCTAssertEqual(fallback.resolvedParent(of: missingParent)?.nodeId, "c")
     }
 
     func testRadialSlotDeterministicAndBounded() {

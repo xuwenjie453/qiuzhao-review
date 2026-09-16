@@ -12,6 +12,7 @@ enum GraphCodec {
         else { visibility = .OWN }
         return GraphNodeDTO(
             nodeId: nodeId, ownerGraphId: dict["owner_graph_id"]?.string,
+            parentNodeId: dict["parent_node_id"]?.string,
             visibility: visibility,
             kind: kind,
             title: dict["title"]?.string ?? "",
