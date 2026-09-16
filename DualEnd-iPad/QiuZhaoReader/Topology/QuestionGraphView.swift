@@ -147,11 +147,14 @@ struct QuestionGraphView: View {
     private var liveCanvasOffset: CGSize {
         let proposed = CGSize(width: committedCanvasOffset.width + canvasDragTranslation.width,
                               height: committedCanvasOffset.height + canvasDragTranslation.height)
-        return geometry.clampedViewportOffset(proposed: proposed, nodeCenters: baseNodeCenters)
+        return geometry.clampedViewportOffset(proposed: proposed, nodeCenters: viewportConstraintCenters)
     }
 
-    private var baseNodeCenters: [CGPoint] {
-        state.snapshot?.nodes.map { point(for: $0) } ?? []
+    /// Clamp 的边界不能读取 dragTransient，否则节点的逐帧拖动会反向改变 viewport。
+    private var viewportConstraintCenters: [CGPoint] {
+        geometry.viewportConstraintCenters(from: state.snapshot?.nodes.map {
+            stableNormalizedPosition(for: $0)
+        } ?? [])
     }
 
     var body: some View {
@@ -212,6 +215,12 @@ struct QuestionGraphView: View {
             ?? CGPoint(x: node.layout.x, y: node.layout.y)
     }
 
+    /// 仅用于 viewport 约束：pending 是本地 durable intent，dragTransient 只是当前手势帧。
+    private func stableNormalizedPosition(for node: GraphNodeDTO) -> CGPoint {
+        state.pendingPositions[node.nodeId]
+            ?? CGPoint(x: node.layout.x, y: node.layout.y)
+    }
+
     private func point(for node: GraphNodeDTO) -> CGPoint {
         geometry.screenPoint(from: normalizedPosition(for: node))
     }
@@ -222,20 +231,25 @@ struct QuestionGraphView: View {
         } ?? false
     }
 
+    private func canStartCanvasPan(at startLocation: CGPoint, viewportOffset: CGSize) -> Bool {
+        !containsNode(at: startLocation, viewportOffset: viewportOffset)
+    }
+
     private var canvasPanGesture: some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .named("graph-canvas"))
             .updating($canvasDragTranslation) { value, translation, _ in
-                guard !containsNode(at: value.startLocation, viewportOffset: committedCanvasOffset) else {
+                guard canStartCanvasPan(at: value.startLocation, viewportOffset: committedCanvasOffset) else {
                     translation = .zero
                     return
                 }
                 translation = value.translation
             }
             .onEnded { value in
-                guard !containsNode(at: value.startLocation, viewportOffset: committedCanvasOffset) else { return }
+                guard canStartCanvasPan(at: value.startLocation, viewportOffset: committedCanvasOffset) else { return }
                 let proposed = CGSize(width: committedCanvasOffset.width + value.translation.width,
                                       height: committedCanvasOffset.height + value.translation.height)
-                committedCanvasOffset = geometry.clampedViewportOffset(proposed: proposed, nodeCenters: baseNodeCenters)
+                committedCanvasOffset = geometry.clampedViewportOffset(proposed: proposed,
+                                                                        nodeCenters: viewportConstraintCenters)
             }
     }
 }

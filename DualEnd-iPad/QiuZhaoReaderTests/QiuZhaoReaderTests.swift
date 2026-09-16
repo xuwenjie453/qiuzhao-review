@@ -234,6 +234,75 @@ final class TopologyLogicTests: XCTestCase {
         XCTAssertTrue(geometry.visualHitRect(at: CGPoint(x: 0.37, y: 0.63), viewportOffset: offset).contains(visual))
     }
 
+    func testViewportConstraintCentersExcludeTransientNodeDragPositions() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let stablePositions = [CGPoint(x: 0.18, y: 0.22), CGPoint(x: 0.82, y: 0.76)]
+        let transientA = CGPoint(x: 0.32, y: 0.35)
+        let transientB = CGPoint(x: 0.94, y: 0.08)
+
+        let constraintCentersBefore = geometry.viewportConstraintCenters(from: stablePositions)
+        let constraintCentersDuringTransientA = geometry.viewportConstraintCenters(from: stablePositions)
+        let constraintCentersDuringTransientB = geometry.viewportConstraintCenters(from: stablePositions)
+
+        XCTAssertEqual(constraintCentersBefore, constraintCentersDuringTransientA)
+        XCTAssertEqual(constraintCentersBefore, constraintCentersDuringTransientB)
+        XCTAssertNotEqual(geometry.screenPoint(from: transientA), geometry.screenPoint(from: transientB))
+    }
+
+    func testNodeDragKeepsViewportOffsetStableWhenConstraintsAreStable() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let stableCenters = geometry.viewportConstraintCenters(from: [
+            CGPoint(x: 0.1, y: 0.2), CGPoint(x: 0.9, y: 0.8)
+        ])
+        let committed = CGSize(width: 87, height: -41)
+        let transientPositions = [CGPoint(x: 0.2, y: 0.2), CGPoint(x: 0.6, y: 0.45), CGPoint(x: 0.95, y: 0.7)]
+
+        for transient in transientPositions {
+            XCTAssertNotEqual(geometry.screenPoint(from: transient), stableCenters[0])
+            let liveOffset = geometry.clampedViewportOffset(proposed: committed, nodeCenters: stableCenters)
+            XCTAssertEqual(liveOffset.width, committed.width, accuracy: 0.0001)
+            XCTAssertEqual(liveOffset.height, committed.height, accuracy: 0.0001)
+        }
+    }
+
+    func testCanvasPanChangesOnlyLocalViewportOffset() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let stablePositions = [CGPoint(x: 0.1, y: 0.2), CGPoint(x: 0.9, y: 0.8)]
+        let centers = geometry.viewportConstraintCenters(from: stablePositions)
+        let committed = CGSize(width: 40, height: -30)
+        let proposed = CGSize(width: committed.width + 120, height: committed.height + 80)
+        let panned = geometry.clampedViewportOffset(proposed: proposed, nodeCenters: centers)
+
+        XCTAssertNotEqual(panned, committed)
+        XCTAssertEqual(centers, geometry.viewportConstraintCenters(from: stablePositions))
+    }
+
+    func testPanOffsetIsRemovedBeforeNodeDragWritesNormalizedPosition() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let graphStart = geometry.screenPoint(from: CGPoint(x: 0.4, y: 0.6))
+        let graphEnd = CGPoint(x: graphStart.x + 96, y: graphStart.y - 54)
+        let offset = CGSize(width: 137, height: -93)
+
+        let unpanned = geometry.normalizedPoint(from: graphEnd)
+        let visualEnd = geometry.visualPoint(from: graphEnd, viewportOffset: offset)
+        let panned = geometry.normalizedPoint(from: geometry.graphPoint(fromVisual: visualEnd, viewportOffset: offset))
+
+        XCTAssertEqual(panned.x, unpanned.x, accuracy: 0.000001)
+        XCTAssertEqual(panned.y, unpanned.y, accuracy: 0.000001)
+    }
+
+    func testVisualHitRectMovesWithViewportOffsetIncludingCenter() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let centerNormalized = CGPoint(x: 0.5, y: 0.5)
+        let originalCenter = geometry.screenPoint(from: centerNormalized)
+        let offset = CGSize(width: 160, height: -120)
+        let visualCenter = geometry.visualPoint(from: originalCenter, viewportOffset: offset)
+        let visualHitRect = geometry.visualHitRect(at: centerNormalized, viewportOffset: offset)
+
+        XCTAssertFalse(visualHitRect.contains(originalCenter))
+        XCTAssertTrue(visualHitRect.contains(visualCenter))
+    }
+
     func testResolvedParentPreservesVisibleHierarchyAndFallsBackToCenter() {
         let center = GraphNodeDTO(nodeId: "c", kind: .CENTER, title: "题目", bodyMarkdown: "q", nodeRevision: 1, layout: LayoutDTO(x: 0.5, y: 0.5, revision: 1))
         let parent = GraphNodeDTO(nodeId: "a", parentNodeId: "c", kind: .EXPLANATION, title: "A", bodyMarkdown: "a", nodeRevision: 1, layout: LayoutDTO(x: 0.7, y: 0.5, revision: 1))

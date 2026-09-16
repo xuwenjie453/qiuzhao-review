@@ -48,6 +48,11 @@ struct GraphCanvasGeometry: Equatable {
         hitRect(at: normalized, size: size).offsetBy(dx: viewportOffset.width, dy: viewportOffset.height)
     }
 
+    /// viewport 的约束边界只应由稳定的布局位置计算；调用方不能传入 drag transient。
+    func viewportConstraintCenters(from stableNormalizedPositions: [CGPoint]) -> [CGPoint] {
+        stableNormalizedPositions.map { screenPoint(from: $0) }
+    }
+
     /// 可把任一最边缘 node center 移到 viewport 中心，但不允许整个图被甩出可恢复范围。
     func clampedViewportOffset(proposed: CGSize, nodeCenters: [CGPoint]) -> CGSize {
         guard !nodeCenters.isEmpty else { return .zero }
