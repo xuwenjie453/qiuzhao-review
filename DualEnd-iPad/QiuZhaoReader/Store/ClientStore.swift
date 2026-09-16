@@ -19,7 +19,9 @@ final actor ClientStore {
       node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, owner_graph_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL,
       parent_node_id TEXT,
       body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL,
-      x_norm REAL NOT NULL, y_norm REAL NOT NULL, layout_revision INTEGER NOT NULL,
+      x_world REAL NOT NULL, y_world REAL NOT NULL,
+      x_norm REAL, y_norm REAL,
+      layout_revision INTEGER NOT NULL,
       locally_deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ink_cache(
       node_id TEXT PRIMARY KEY, ink_revision INTEGER NOT NULL DEFAULT 0, format TEXT NOT NULL,
@@ -46,14 +48,48 @@ final actor ClientStore {
     static func inMemory() -> ClientStore { ClientStore(dbPath: ":memory:") }
 
     private func migrate() {
-        // Additive migration for stores created by v1; all statements are idempotent.
+        // Additive migration for stores created by earlier releases; all statements are idempotent.
         let nodeCols = Set((try? db.query("PRAGMA table_info(nodes_cache)"))?.compactMap { $0["name"] as? String } ?? [])
         let graphCols = Set((try? db.query("PRAGMA table_info(graphs_cache)"))?.compactMap { $0["name"] as? String } ?? [])
         if !nodeCols.contains("owner_graph_id") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN owner_graph_id TEXT") }
         if !nodeCols.contains("parent_node_id") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN parent_node_id TEXT") }
+        if !nodeCols.contains("x_world") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN x_world REAL") }
+        if !nodeCols.contains("y_world") { try? db.exec("ALTER TABLE nodes_cache ADD COLUMN y_world REAL") }
         if !graphCols.contains("parent_graphs_json") { try? db.exec("ALTER TABLE graphs_cache ADD COLUMN parent_graphs_json TEXT NOT NULL DEFAULT '[]'") }
+        if nodeCols.contains("x_norm") && nodeCols.contains("y_norm") {
+            try? db.exec("UPDATE nodes_cache SET x_world=(x_norm - 0.5) * ?, y_world=(y_norm - 0.5) * ? WHERE x_world IS NULL OR y_world IS NULL",
+                         [Double(GraphWorldSpace.legacyWidth), Double(GraphWorldSpace.legacyHeight)])
+        }
+        try? db.exec("UPDATE nodes_cache SET x_world=COALESCE(x_world,0), y_world=COALESCE(y_world,0)")
+        migrateLegacyMoveOutbox()
         try? db.exec("UPDATE nodes_cache SET owner_graph_id=graph_id WHERE owner_graph_id IS NULL")
         try? db.exec("INSERT OR IGNORE INTO graph_node_membership_cache(graph_id,node_id,visibility) SELECT graph_id,node_id,'OWN' FROM nodes_cache")
+    }
+
+    /// 旧 App 可能在升级前已经 durable 了一条 x_norm/y_norm MOVE_NODE。
+    /// 不能让它在新协议下以 undefined 参数重放；迁移保留同一 message/command ID，
+    /// 所以仍满足 outbox at-least-once 和服务端 command dedup 契约。
+    private func migrateLegacyMoveOutbox() {
+        let rows = (try? db.query("SELECT outbox_id,payload_json FROM outbox WHERE kind='MOVE_NODE'")) ?? []
+        for row in rows {
+            guard let id = row["outbox_id"] as? String,
+                  let raw = row["payload_json"] as? String,
+                  let data = raw.data(using: .utf8),
+                  var envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  var payload = envelope["payload"] as? [String: Any],
+                  payload["x_world"] == nil,
+                  let x = (payload["x_norm"] as? NSNumber)?.doubleValue,
+                  let y = (payload["y_norm"] as? NSNumber)?.doubleValue else { continue }
+            let world = GraphWorldSpace.legacyNormalizedToWorld(x: CGFloat(x), y: CGFloat(y))
+            payload.removeValue(forKey: "x_norm")
+            payload.removeValue(forKey: "y_norm")
+            payload["x_world"] = Double(world.x)
+            payload["y_world"] = Double(world.y)
+            envelope["payload"] = payload
+            guard let rewritten = try? JSONSerialization.data(withJSONObject: envelope),
+                  let json = String(data: rewritten, encoding: .utf8) else { continue }
+            try? db.exec("UPDATE outbox SET payload_json=? WHERE outbox_id=?", [json, id])
+        }
     }
 
     // MARK: - identity
@@ -88,8 +124,8 @@ final actor ClientStore {
                                 title: row["title"] as? String ?? "",
                                 bodyMarkdown: row["body_markdown"] as? String ?? "",
                                 nodeRevision: (row["node_revision"] as? Int64).map(Int.init) ?? 1,
-                                layout: LayoutDTO(x: row["x_norm"] as? Double ?? 0.5,
-                                                  y: row["y_norm"] as? Double ?? 0.5,
+                                layout: LayoutDTO(x: row["x_world"] as? Double ?? 0,
+                                                  y: row["y_world"] as? Double ?? 0,
                                                   revision: (row["layout_revision"] as? Int64).map(Int.init) ?? 1))
         } ?? []
         return GraphSnapshotDTO(graphId: graphId,
@@ -130,16 +166,17 @@ final actor ClientStore {
         }
         // upsert nodes（保留本地未同步 title/layout 意图）
         for n in dto.nodes {
-            let local = try? db.query("SELECT title,x_norm,y_norm,node_revision,layout_revision FROM nodes_cache WHERE node_id=?", [n.nodeId]).first
+            let local = try? db.query("SELECT title,x_world,y_world,node_revision,layout_revision FROM nodes_cache WHERE node_id=?", [n.nodeId]).first
             let pendingRow = try? db.query("SELECT kind FROM outbox WHERE entity_id=? ORDER BY rowid LIMIT 1", [n.nodeId]).first
             let pending = pendingRow != nil
             let pendingMove = (pendingRow?["kind"] as? String) == "MOVE_NODE"
             let title = (pending && local?["title"] != nil) ? (local?["title"] as? String ?? n.title) : n.title
-            let x = (pendingMove ? local?["x_norm"] as? Double : nil) ?? n.layout.x
-            let y = (pendingMove ? local?["y_norm"] as? Double : nil) ?? n.layout.y
-            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
-                [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.parentNodeId, n.kind.rawValue, title, n.bodyMarkdown, n.nodeRevision,
-                 x, y, n.layout.revision, Date().timeIntervalSince1970])
+            let x = (pendingMove ? local?["x_world"] as? Double : nil) ?? n.layout.x
+            let y = (pendingMove ? local?["y_world"] as? Double : nil) ?? n.layout.y
+            let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
+            try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                         [n.nodeId, dto.graphId, n.ownerGraphId ?? dto.graphId, n.parentNodeId, n.kind.rawValue, title, n.bodyMarkdown, n.nodeRevision,
+                          x, y, legacy.x, legacy.y, n.layout.revision, Date().timeIntervalSince1970])
             try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                          [dto.graphId, n.nodeId, n.visibility.rawValue])
         }
@@ -170,9 +207,10 @@ final actor ClientStore {
             switch opName {
             case "ADD_NODE":
                 guard let nv = op["node"]?.dict, let n = GraphCodec.node(from: nv) else { continue }
-                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,title,body_markdown,node_revision,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                let legacy = GraphWorldSpace.worldToLegacyNormalized(x: n.layout.x, y: n.layout.y)
+                try? db.exec("INSERT OR REPLACE INTO nodes_cache (node_id,graph_id,owner_graph_id,parent_node_id,kind,title,body_markdown,node_revision,x_world,y_world,x_norm,y_norm,layout_revision,locally_deleted,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)",
                     [n.nodeId, graphId, n.ownerGraphId ?? graphId, n.parentNodeId, n.kind.rawValue, n.title, n.bodyMarkdown, n.nodeRevision,
-                     n.layout.x, n.layout.y, n.layout.revision, Date().timeIntervalSince1970])
+                     n.layout.x, n.layout.y, legacy.x, legacy.y, n.layout.revision, Date().timeIntervalSince1970])
                 try? db.exec("INSERT OR REPLACE INTO graph_node_membership_cache(graph_id,node_id,visibility) VALUES (?,?,?)",
                              [graphId, n.nodeId, n.visibility.rawValue])
                 nodeDirty = true
@@ -181,8 +219,11 @@ final actor ClientStore {
                 try? db.exec("UPDATE nodes_cache SET title=?, updated_at=? WHERE node_id=?", [title, Date().timeIntervalSince1970, nid])
             case "UPDATE_LAYOUT":
                 guard let nid = op["node_id"]?.string, let lv = op["layout"]?.dict else { continue }
-                try? db.exec("UPDATE nodes_cache SET x_norm=?, y_norm=?, layout_revision=? WHERE node_id=?",
-                             [lv["x"]?.number ?? 0.5, lv["y"]?.number ?? 0.5, lv["revision"]?.number.map { Int($0) } ?? 1, nid])
+                let x = lv["x"]?.number ?? 0
+                let y = lv["y"]?.number ?? 0
+                let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
+                try? db.exec("UPDATE nodes_cache SET x_world=?, y_world=?, x_norm=?, y_norm=?, layout_revision=? WHERE node_id=?",
+                             [x, y, legacy.x, legacy.y, lv["revision"]?.number.map { Int($0) } ?? 1, nid])
             case "REMOVE_NODE":
                 guard let nid = op["node_id"]?.string else { continue }
                 try? db.exec("UPDATE nodes_cache SET locally_deleted=1, updated_at=? WHERE node_id=?", [Date().timeIntervalSince1970, nid])
@@ -245,13 +286,14 @@ final actor ClientStore {
     /// keep the optimistic position until the matching server snapshot arrives.
     func localMove(nodeId: String, x: Double, y: Double, baseLayoutRevision: Int) -> String {
         db.begin(); defer { db.rollback() }
-        try? db.exec("UPDATE nodes_cache SET x_norm=?, y_norm=?, updated_at=? WHERE node_id=? AND locally_deleted=0",
-                     [x, y, Date().timeIntervalSince1970, nodeId])
+        let legacy = GraphWorldSpace.worldToLegacyNormalized(x: x, y: y)
+        try? db.exec("UPDATE nodes_cache SET x_world=?, y_world=?, x_norm=?, y_norm=?, updated_at=? WHERE node_id=? AND locally_deleted=0",
+                     [x, y, legacy.x, legacy.y, Date().timeIntervalSince1970, nodeId])
         let messageId = UUID().uuidString.lowercased()
         queueOutboxInTx(messageId: messageId, kind: "MOVE_NODE", entityId: nodeId,
                         payload: ["command_id": messageId, "kind": "MOVE_NODE",
                                   "graph_id": currentGraphId() ?? "",
-                                  "payload": ["node_id": nodeId, "x_norm": x, "y_norm": y, "base_layout_revision": baseLayoutRevision]])
+                                  "payload": ["node_id": nodeId, "x_world": x, "y_world": y, "base_layout_revision": baseLayoutRevision]])
         db.commit()
         return messageId
     }

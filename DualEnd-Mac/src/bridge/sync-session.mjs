@@ -17,7 +17,7 @@ export class SyncSession extends EventEmitter {
     this.svc = svc;
     this.log = logger;
     this.epoch = null;
-    this.protocol = 2;
+    this.protocol = 3;
     this.deviceId = null;
     this.closed = false;
     conn.on('message', (text) => this.onMessage(text));
@@ -66,7 +66,14 @@ export class SyncSession extends EventEmitter {
       return;
     }
     this.deviceId = String(p.device_id);
-    this.protocol = p.supported_protocols.includes(2) ? 2 : 1;
+    this.protocol = Math.max(...p.supported_protocols.filter((v) => SUPPORTED_PROTOCOLS.includes(v)));
+    // WORLD_V1 的 layout.x/y 已不再是 [0,1] 归一化数。旧客户端会把它
+    // 误画到屏幕外，因此必须在发送任何 snapshot 前要求升级。
+    if (this.protocol < 3) {
+      this.send(MSG.COMMAND_REJECTED, { reason: 'UPGRADE_REQUIRED', required_protocol: 3 });
+      this.conn.close(1002);
+      return;
+    }
     this.epoch = uuid();                       // 每次会话新 epoch
     this.store.prepare(`INSERT INTO device_state(device_id,last_seen_at,last_acked_server_seq)
                         VALUES (?,?,0) ON CONFLICT(device_id) DO UPDATE SET last_seen_at=excluded.last_seen_at`)
@@ -179,7 +186,7 @@ export class SyncSession extends EventEmitter {
             title: payload.title, base_node_revision: payload.base_node_revision, actor: 'IPAD' });
         case 'MOVE_NODE':
           return this.svc.moveNode({ command_id: cmdId, node_id: payload.node_id,
-            x_norm: payload.x_norm, y_norm: payload.y_norm,
+            x_world: payload.x_world, y_world: payload.y_world,
             base_layout_revision: payload.base_layout_revision, actor: 'IPAD' });
         case 'DELETE_NODE':
           return this.svc.deleteNode({ command_id: cmdId, node_id: payload.node_id,

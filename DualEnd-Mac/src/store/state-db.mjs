@@ -5,8 +5,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { nowIso } from '../util.mjs';
+import { LEGACY_WORLD_HEIGHT, LEGACY_WORLD_WIDTH } from '../graph/world-layout.mjs';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const DDL = `
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -61,8 +62,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_center_per_graph
   ON nodes(graph_id) WHERE kind='CENTER' AND deleted_at IS NULL;
 CREATE TABLE IF NOT EXISTS layouts(
   node_id TEXT PRIMARY KEY REFERENCES nodes(node_id),
-  x_norm REAL NOT NULL,
-  y_norm REAL NOT NULL,
+  x_world REAL NOT NULL,
+  y_world REAL NOT NULL,
+  -- 保留可空镜像列，使 v4 原地升级库的 NOT NULL 历史列也能继续写入。
+  -- canonical 代码从不读取它们。
+  x_norm REAL,
+  y_norm REAL,
   layout_revision INTEGER NOT NULL DEFAULT 1,
   pinned_by_user INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
@@ -203,6 +208,34 @@ export class StateDb {
         this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('4', 'schema_version');
         this.db.exec('COMMIT');
         current = 4;
+      } catch (e) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw e;
+      }
+    }
+    if (current < 5) {
+      // v4 及之前用 [0,1] 归一化坐标。保留旧列以保证 SQLite 的加列迁移可逆，
+      // 但从本版本起所有 canonical 读写只走无边界的 world 字段。
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const columns = this.db.prepare('PRAGMA table_info(layouts)').all().map((c) => c.name);
+        if (!columns.includes('x_world')) this.db.exec('ALTER TABLE layouts ADD COLUMN x_world REAL');
+        if (!columns.includes('y_world')) this.db.exec('ALTER TABLE layouts ADD COLUMN y_world REAL');
+        const after = this.db.prepare('PRAGMA table_info(layouts)').all().map((c) => c.name);
+        if (after.includes('x_norm') && after.includes('y_norm')) {
+          this.db.exec(`UPDATE layouts
+            SET x_world=(x_norm - 0.5) * ${LEGACY_WORLD_WIDTH},
+                y_world=(y_norm - 0.5) * ${LEGACY_WORLD_HEIGHT}
+            WHERE x_world IS NULL OR y_world IS NULL`);
+        } else {
+          // 仅作为异常库的安全兜底；正常 v1-v4 库必然带有 normalized 列。
+          this.db.exec('UPDATE layouts SET x_world=COALESCE(x_world,0), y_world=COALESCE(y_world,0)');
+        }
+        const incomplete = this.db.prepare('SELECT count(*) AS c FROM layouts WHERE x_world IS NULL OR y_world IS NULL').get().c;
+        if (Number(incomplete) !== 0) throw new Error('WORLD_LAYOUT_MIGRATION_INCOMPLETE');
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('5', 'schema_version');
+        this.db.exec('COMMIT');
+        current = 5;
       } catch (e) {
         try { this.db.exec('ROLLBACK'); } catch {}
         throw e;

@@ -1,8 +1,9 @@
 // QuestionGraph Service —— Query/Command 分离; canonical mutation 全在此模块; 不直连 bridge/CLI。
 // 规则: CENTER 不可删/唯一; EXPLANATION 永久; TEMPORARY 绑定 ACTIVE round, close 即过期且不复活;
 // body immutable; 拖动=USER_PINNED; CAS 按 node/layout revision; graph_revision++ 每次 canonical change。
-import { AppError, ERR, nowIso, uuid, stableId, sha256hex, clamp } from '../util.mjs';
+import { AppError, ERR, nowIso, uuid, stableId, sha256hex } from '../util.mjs';
 import { LIMITS } from '../util.mjs';
+import { WORLD_ORIGIN, worldPointIsValid, worldRadialSlot, worldToLegacyNormalized } from './world-layout.mjs';
 
 const KINDS = new Set(['CENTER', 'EXPLANATION', 'TEMPORARY']);
 
@@ -119,7 +120,7 @@ export class QuestionGraphService {
        SELECT n.*, 1 AS inherited FROM nodes n JOIN ancestors a ON a.graph_id=n.graph_id
          WHERE n.graph_id<>? AND n.kind='EXPLANATION'
      )
-     SELECT c.*, l.x_norm, l.y_norm, l.layout_revision, l.pinned_by_user,
+     SELECT c.*, l.x_world, l.y_world, l.layout_revision, l.pinned_by_user,
        CASE WHEN c.inherited=1 THEN 'INHERITED' ELSE 'OWN' END AS visibility,
        c.graph_id AS owner_graph_id
        FROM candidates c LEFT JOIN layouts l ON l.node_id=c.node_id
@@ -137,7 +138,7 @@ export class QuestionGraphService {
       node_id: n.node_id, owner_graph_id: n.owner_graph_id, visibility: n.visibility,
       parent_node_id: n.parent_node_id, kind: n.kind, title: n.title,
       body_markdown: n.body_markdown, node_revision: n.node_revision,
-      layout: { x: n.x_norm ?? 0.5, y: n.y_norm ?? 0.5, revision: n.layout_revision ?? 1 },
+      layout: { x: n.x_world ?? WORLD_ORIGIN.x, y: n.y_world ?? WORLD_ORIGIN.y, revision: n.layout_revision ?? 1 },
     }));
     return {
       graph_id: graphId,
@@ -179,8 +180,9 @@ export class QuestionGraphService {
                             VALUES (?,?,NULL,?,?,?,?,NULL,1,?)`)
           .run(centerId, graphId, 'CENTER', String(ai_title).trim(), question_body_markdown,
                sha256hex(question_body_markdown), now);
-        this.store.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,0.5,0.5,1,0,?)')
-          .run(centerId, now);
+        const legacy = worldToLegacyNormalized(WORLD_ORIGIN.x, WORLD_ORIGIN.y);
+        this.store.prepare('INSERT INTO layouts(node_id,x_world,y_world,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,1,0,?)')
+          .run(centerId, WORLD_ORIGIN.x, WORLD_ORIGIN.y, legacy.x, legacy.y, now);
         g = this.graphGet(graphId);
       }
       // 全局仅一个 ACTIVE round; 若已有(同图=重开讨论 / 异图=切题) → 先 INTERRUPTED, 其 temporary 过期
@@ -266,8 +268,9 @@ export class QuestionGraphService {
              sha256hex(body_markdown), kind === 'TEMPORARY' ? round.round_id : null,
              origin_turn_ref ?? null, now);
       const { x, y } = this._radialSlot(round.graph_id, kind === 'TEMPORARY' ? round.round_id : null);
-      this.store.prepare('INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,1,0,?)')
-        .run(nodeId, x, y, now);
+      const legacy = worldToLegacyNormalized(x, y);
+      this.store.prepare('INSERT INTO layouts(node_id,x_world,y_world,x_norm,y_norm,layout_revision,pinned_by_user,updated_at) VALUES (?,?,?,?,?,1,0,?)')
+        .run(nodeId, x, y, legacy.x, legacy.y, now);
       const g = this.graphGet(round.graph_id);
       this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?')
         .run(now, g.graph_id);
@@ -303,9 +306,10 @@ export class QuestionGraphService {
     });
   }
 
-  /** move: layout CAS; clamp 0..1; pinned=1(USER_PINNED); layout_revision++ / graph_revision++。 */
-  moveNode({ command_id, node_id, x_norm, y_norm, base_layout_revision, actor = 'IPAD' }) {
-    const x = clamp(Number(x_norm), 0, 1), y = clamp(Number(y_norm), 0, 1);
+  /** move: 无边界 world layout CAS; pinned=1(USER_PINNED); layout_revision++ / graph_revision++。 */
+  moveNode({ command_id, node_id, x_world, y_world, base_layout_revision, actor = 'IPAD' }) {
+    const x = Number(x_world), y = Number(y_world);
+    assert(worldPointIsValid(x, y), ERR.VALIDATION, 'world 坐标必须为有限且在安全范围内的数值');
     return this.store.withTx(() => {
       const dup = this.store.dedupGet(command_id);
       if (dup) return dup;
@@ -314,14 +318,16 @@ export class QuestionGraphService {
       const l = this.store.prepare('SELECT * FROM layouts WHERE node_id=?').get(node_id);
       assert((l?.layout_revision ?? 1) === base_layout_revision, ERR.CAS_MISMATCH, 'layout_revision CAS 冲突');
       const now = nowIso();
-      this.store.prepare(`INSERT INTO layouts(node_id,x_norm,y_norm,layout_revision,pinned_by_user,updated_at)
-                          VALUES (?,?,?,?,1,?)
-                          ON CONFLICT(node_id) DO UPDATE SET x_norm=excluded.x_norm, y_norm=excluded.y_norm,
+      const legacy = worldToLegacyNormalized(x, y);
+      this.store.prepare(`INSERT INTO layouts(node_id,x_world,y_world,x_norm,y_norm,layout_revision,pinned_by_user,updated_at)
+                          VALUES (?,?,?,?,?,?,1,?)
+                          ON CONFLICT(node_id) DO UPDATE SET x_world=excluded.x_world, y_world=excluded.y_world,
+                            x_norm=excluded.x_norm, y_norm=excluded.y_norm,
                             layout_revision=layout_revision+1, pinned_by_user=1, updated_at=excluded.updated_at`)
-        .run(node_id, x, y, (l?.layout_revision ?? 1) + 1, now);
+        .run(node_id, x, y, legacy.x, legacy.y, (l?.layout_revision ?? 1) + 1, now);
       const affected = this.descendantGraphIds(n.graph_id);
       for (const gid of affected) this.store.prepare('UPDATE graphs SET graph_revision=graph_revision+1, updated_at=? WHERE graph_id=?').run(now, gid);
-      const result = { graph_id: n.graph_id, affected_graph_ids: affected, node_id, x_norm: x, y_norm: y,
+      const result = { graph_id: n.graph_id, affected_graph_ids: affected, node_id, x_world: x, y_world: y,
                        layout_revision: (l?.layout_revision ?? 1) + 1, graph_revision: this.graphGet(n.graph_id).graph_revision,
                        graph_revisions: Object.fromEntries(affected.map((id) => [id, this.graphGet(id).graph_revision])) };
       this.store.dedupPut(command_id, result);
@@ -406,11 +412,6 @@ export class QuestionGraphService {
     const cnt = this.store.prepare(`SELECT count(*) AS c FROM nodes n
        WHERE n.graph_id=? AND n.deleted_at IS NULL AND (n.expired_at IS NULL OR (n.kind='TEMPORARY' AND n.round_id=?))
          AND n.kind != 'CENTER'`).get(graphId, tempRoundId ?? null).c;
-    const idx = cnt;
-    const golden = 2.399963229728653;            // golden angle (rad)
-    const ring = Math.floor(idx / 12);
-    const radius = Math.min(0.18 + ring * 0.12, 0.42);
-    const a = golden * idx;
-    return { x: clamp(0.5 + radius * Math.cos(a), 0.05, 0.95), y: clamp(0.5 + radius * Math.sin(a), 0.08, 0.92) };
+    return worldRadialSlot(cnt);
   }
 }

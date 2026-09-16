@@ -57,17 +57,18 @@ before(() => {
 after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe('store 基础', () => {
-  test('integrity ok & schema_version=4', () => {
+  test('integrity ok & schema_version=5', () => {
     const ic = store.integrity();
     assert.equal(ic.integrity, 'ok');
     assert.equal(ic.fk_violations, 0);
-    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '4');
+    assert.equal(store.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '5');
     assert.ok(store.prepare('PRAGMA table_info(nodes)').all().some((column) => column.name === 'parent_node_id'));
   });
-  test('v3 migration preserves IDs/layout/ink and backfills non-center parent', () => {
+  test('v3 migration preserves IDs/layout/ink, backfills parent, and converts legacy layout', () => {
     const legacyPath = join(dir, 'legacy-v3.db');
     const legacy = new DatabaseSync(legacyPath);
     const legacyDdl = DDL
+      .replace('  x_world REAL NOT NULL,\n  y_world REAL NOT NULL,\n', '')
       .replace('  parent_node_id TEXT REFERENCES nodes(node_id),\n', '')
       .replace('CREATE INDEX IF NOT EXISTS idx_nodes_parent_node_id ON nodes(parent_node_id);\n', '');
     legacy.exec(legacyDdl);
@@ -89,10 +90,13 @@ describe('store 基础', () => {
     legacy.close();
 
     const migrated = new StateDb(legacyPath);
-    assert.equal(migrated.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '4');
+    assert.equal(migrated.prepare('SELECT value FROM meta WHERE key=?').get('schema_version').value, '5');
     assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-center').parent_node_id, null);
     assert.equal(migrated.prepare('SELECT parent_node_id FROM nodes WHERE node_id=?').get('legacy-explanation').parent_node_id, 'legacy-center');
     assert.equal(migrated.prepare('SELECT layout_revision FROM layouts WHERE node_id=?').get('legacy-explanation').layout_revision, 2);
+    const layout = migrated.prepare('SELECT x_world,y_world FROM layouts WHERE node_id=?').get('legacy-explanation');
+    assert.ok(Math.abs(layout.x_world - 200) < 0.000001);
+    assert.ok(Math.abs(layout.y_world + 140) < 0.000001);
     assert.equal(migrated.prepare('SELECT ink_revision FROM ink WHERE node_id=?').get('legacy-explanation').ink_revision, 1);
     assert.deepEqual(migrated.integrity(), { integrity: 'ok', fk_violations: 0 });
     migrated.close();
@@ -137,13 +141,14 @@ describe('graph identity & open', () => {
     assert.ok(svc.listUserGraphs('并发').some((g) => g.custom_id === 'ug-test-001'));
     assert.equal(svc.listUserGraphs().filter((g) => g.custom_id.startsWith('ug-test-')).length, 2);
   });
-  test('snapshot 必含 CENTER; center layout 0.5,0.5', () => {
+  test('snapshot 必含 CENTER; center layout 位于世界原点', () => {
     const g = store.prepare('SELECT * FROM graphs').get();
     const snap = svc.snapshotPayload(g.graph_id, svc.activeRound().round_id);
     assert.equal(snap.center_node_id, g.center_node_id);
     assert.equal(snap.nodes.length, 1);
     assert.equal(snap.nodes[0].kind, 'CENTER');
-    assert.equal(snap.nodes[0].layout.x, 0.5);
+    assert.equal(snap.nodes[0].layout.x, 0);
+    assert.equal(snap.nodes[0].layout.y, 0);
   });
 });
 
@@ -248,14 +253,17 @@ describe('CENTER 守卫 & rename/move/delete CAS', () => {
     assert.equal(ok.title, 't1');
     assert.equal(ok.node_revision, 2);
   });
-  test('move: layout CAS; clamp; pin=1', () => {
+  test('move: layout CAS; 保留无限画布 world 坐标; pin=1', () => {
     const r = freshRound();
     const ex = svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', ai_title: 't', body_markdown: 'b' });
-    const m = svc.moveNode({ command_id: uid(), node_id: ex.node_id, x_norm: 1.7, y_norm: -0.2, base_layout_revision: 1 });
-    assert.equal(m.x_norm, 1.0); assert.equal(m.y_norm, 0.0);
+    const m = svc.moveNode({ command_id: uid(), node_id: ex.node_id, x_world: 17_000, y_world: -12_000, base_layout_revision: 1 });
+    assert.equal(m.x_world, 17_000); assert.equal(m.y_world, -12_000);
     const l = store.prepare('SELECT * FROM layouts WHERE node_id=?').get(ex.node_id);
+    assert.equal(l.x_world, 17_000); assert.equal(l.y_world, -12_000);
     assert.equal(l.pinned_by_user, 1);
     assert.equal(l.layout_revision, 2);
+    assert.throws(() => svc.moveNode({ command_id: uid(), node_id: ex.node_id, x_world: Infinity, y_world: 0, base_layout_revision: 2 }),
+      (e) => e.code === ERR.VALIDATION);
   });
 });
 
@@ -294,7 +302,7 @@ describe('graph_revision 单调递增', () => {
     const before = store.prepare('SELECT graph_revision FROM graphs').get().graph_revision;
     const ex = svc.addNode({ command_id: uid(), round_id: r.round_id, kind: 'EXPLANATION', ai_title: 't', body_markdown: 'b' });
     svc.renameNode({ command_id: uid(), node_id: ex.node_id, title: 't2', base_node_revision: ex.node_revision });
-    svc.moveNode({ command_id: uid(), node_id: ex.node_id, x_norm: 0.3, y_norm: 0.3, base_layout_revision: ex.layout?.revision ?? 1 });
+    svc.moveNode({ command_id: uid(), node_id: ex.node_id, x_world: 300, y_world: -300, base_layout_revision: ex.layout?.revision ?? 1 });
     const after = store.prepare('SELECT graph_revision FROM graphs').get().graph_revision;
     assert.ok(after >= before + 3);
   });

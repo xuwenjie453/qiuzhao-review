@@ -177,11 +177,11 @@ export class Daemon extends EventEmitter {
       ops.push({ op: 'ADD_NODE', node: {
         node_id: n.node_id, owner_graph_id: n.graph_id, visibility: n.graph_id === graphId ? 'OWN' : 'INHERITED',
         parent_node_id: n.parent_node_id, kind: n.kind, title: n.title, body_markdown: n.body_markdown,
-        node_revision: n.node_revision, layout: { x: l.x_norm, y: l.y_norm, revision: l.layout_revision } } });
+        node_revision: n.node_revision, layout: { x: l.x_world, y: l.y_world, revision: l.layout_revision } } });
     } else if (result.node_id && result.title !== undefined) {
       ops.push({ op: 'UPDATE_TITLE', node_id: result.node_id, title: result.title, node_revision: result.node_revision });
-    } else if (result.node_id && result.x_norm !== undefined) {
-      ops.push({ op: 'UPDATE_LAYOUT', node_id: result.node_id, layout: { x: result.x_norm, y: result.y_norm, revision: result.layout_revision } });
+    } else if (result.node_id && result.x_world !== undefined) {
+      ops.push({ op: 'UPDATE_LAYOUT', node_id: result.node_id, layout: { x: result.x_world, y: result.y_world, revision: result.layout_revision } });
     } else if (result.deleted) {
       ops.push({ op: 'REMOVE_NODE', node_id: result.node_id });
     } else if (result.removed_temporary?.length) {

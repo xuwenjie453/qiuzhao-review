@@ -1,13 +1,15 @@
-// Topology —— SwiftUI 问题图：统一图布坐标、确定性手势和本地乐观位置。
+// Topology —— SwiftUI 问题图：WORLD_V1 坐标、无限本地相机和确定性手势。
+import Foundation
 import SwiftUI
 
 enum TopologyLayout {
+    /// 与 Mac 的 worldRadialSlot 保持同一确定性初始排布，用于逻辑测试和未来本地预览。
     static func slot(index: Int) -> CGPoint {
         let golden = 2.399963229728653
         let ring = Double(index / 12)
-        let radius = min(0.18 + ring * 0.12, 0.42)
+        let radius = 180 + ring * 135
         let angle = golden * Double(index)
-        return CGPoint(x: 0.5 + radius * cos(angle), y: 0.5 + radius * sin(angle))
+        return CGPoint(x: radius * cos(angle), y: radius * sin(angle))
     }
 }
 
@@ -41,14 +43,16 @@ struct ChildLink: Shape {
 
 struct NodeShapeView: View {
     let node: GraphNodeDTO
-    let normalized: CGPoint
+    let world: CGPoint
     let geometry: GraphCanvasGeometry
     let viewportOffset: CGSize
     let isSelected: Bool
     let onTap: () -> Void
     let onDoubleTap: () -> Void
-    let onDragChanged: (CGPoint) -> Void
-    let onDragEnded: (CGPoint) -> Void
+    let onDragBegan: () -> Void
+    /// visualCenter 和 touch 由父图层换算为 canonical world point，保证边缘自动平移后不抖动。
+    let onDragChanged: (CGPoint, CGPoint, Date) -> Void
+    let onDragEnded: (CGPoint, CGPoint, Date) -> Void
 
     private let glyphSize: CGFloat = 64
     private let hitSize: CGFloat = 88
@@ -56,7 +60,7 @@ struct NodeShapeView: View {
     @State private var isDragging = false
 
     var body: some View {
-        let center = geometry.screenPoint(from: normalized)
+        let center = geometry.screenPoint(from: world)
         let visualCenter = geometry.visualPoint(from: center, viewportOffset: viewportOffset)
         return ZStack {
             glyph
@@ -96,21 +100,19 @@ struct NodeShapeView: View {
                         grabOffset = CGSize(width: visualCenter.x - value.location.x,
                                             height: visualCenter.y - value.location.y)
                         isDragging = true
+                        onDragBegan()
                     }
                     let newVisualCenter = CGPoint(x: value.location.x + grabOffset.width,
                                                    y: value.location.y + grabOffset.height)
-                    let graphCenter = geometry.graphPoint(fromVisual: newVisualCenter, viewportOffset: viewportOffset)
-                    onDragChanged(geometry.normalizedPoint(from: graphCenter))
+                    onDragChanged(newVisualCenter, value.location, value.time)
                 }
                 .onEnded { value in
                     guard !node.isCenter else { return }
                     let newVisualCenter = CGPoint(x: value.location.x + grabOffset.width,
                                                    y: value.location.y + grabOffset.height)
-                    let graphCenter = geometry.graphPoint(fromVisual: newVisualCenter, viewportOffset: viewportOffset)
-                    let final = geometry.normalizedPoint(from: graphCenter)
+                    onDragEnded(newVisualCenter, value.location, value.time)
                     isDragging = false
                     grabOffset = .zero
-                    onDragEnded(final)
                 },
             including: .gesture
         )
@@ -139,6 +141,7 @@ struct QuestionGraphView: View {
     let onNodeDragEnded: (String, CGPoint) -> Void
     @State private var committedCanvasOffset: CGSize = .zero
     @State private var canvasPanSession: CanvasPanSession?
+    @State private var nodeAutoPanLastTime: Date?
     @GestureState private var canvasDragTranslation: CGSize = .zero
 
     private var geometry: GraphCanvasGeometry {
@@ -147,23 +150,23 @@ struct QuestionGraphView: View {
 
     private var liveCanvasOffset: CGSize {
         let session = canvasPanSession
-        let initialOffset = session?.initialViewportOffset ?? committedCanvasOffset
-        let translation = session?.ownsCanvas == false ? .zero : canvasDragTranslation
-        let proposed = CGSize(width: initialOffset.width + translation.width,
-                              height: initialOffset.height + translation.height)
-        return geometry.clampedViewportOffset(
-            proposed: proposed,
-            nodeCenters: session?.constraintCenters ?? viewportConstraintCenters
-        )
+        // 节点触摸会建立一个 ownsCanvas=false 的父手势会话。节点边缘自动平移
+        // 必须仍读取最新 committed offset，不能被该 non-owner session 冻住。
+        let initialOffset: CGSize
+        let translation: CGSize
+        if let session, session.ownsCanvas {
+            initialOffset = session.initialViewportOffset
+            translation = canvasDragTranslation
+        } else {
+            initialOffset = committedCanvasOffset
+            translation = .zero
+        }
+        return CGSize(width: initialOffset.width + translation.width,
+                      height: initialOffset.height + translation.height)
     }
 
-    /// Clamp 的边界不能读取 dragTransient，否则节点的逐帧拖动会反向改变 viewport。
-    private var viewportConstraintCenters: [CGPoint] {
-        geometry.viewportConstraintCenters(from: stableNormalizedPositions)
-    }
-
-    private var stableNormalizedPositions: [CGPoint] {
-        state.snapshot?.nodes.map { stableNormalizedPosition(for: $0) } ?? []
+    private var stableWorldPositions: [CGPoint] {
+        state.snapshot?.nodes.map { stableWorldPosition(for: $0) } ?? []
     }
 
     var body: some View {
@@ -179,14 +182,19 @@ struct QuestionGraphView: View {
                     }
                     ForEach(snap.nodes, id: \.nodeId) { node in
                         NodeShapeView(node: node,
-                                      normalized: normalizedPosition(for: node),
+                                      world: worldPosition(for: node),
                                       geometry: geometry,
                                       viewportOffset: liveCanvasOffset,
                                       isSelected: state.selectedNodeId == node.nodeId,
                                       onTap: { onNodeTap(node.nodeId) },
                                       onDoubleTap: { onNodeDoubleTap(node.nodeId) },
-                                      onDragChanged: { onNodeDragChanged(node.nodeId, $0) },
-                                      onDragEnded: { onNodeDragEnded(node.nodeId, $0) })
+                                      onDragBegan: beginNodeDrag,
+                                      onDragChanged: { visualCenter, location, time in
+                                          updateNodeDrag(node.nodeId, visualCenter: visualCenter, location: location, time: time)
+                                      },
+                                      onDragEnded: { visualCenter, location, time in
+                                          endNodeDrag(node.nodeId, visualCenter: visualCenter, location: location, time: time)
+                                      })
                     }
                 }
                 .offset(liveCanvasOffset)
@@ -218,37 +226,64 @@ struct QuestionGraphView: View {
         .onChange(of: state.snapshot?.graphId) { _, _ in
             committedCanvasOffset = .zero
             canvasPanSession = nil
+            nodeAutoPanLastTime = nil
         }
     }
 
-    private func normalizedPosition(for node: GraphNodeDTO) -> CGPoint {
+    private func worldPosition(for node: GraphNodeDTO) -> CGPoint {
         state.dragTransient[node.nodeId]
             ?? state.pendingPositions[node.nodeId]
             ?? CGPoint(x: node.layout.x, y: node.layout.y)
     }
 
-    /// 仅用于 viewport 约束：pending 是本地 durable intent，dragTransient 只是当前手势帧。
-    private func stableNormalizedPosition(for node: GraphNodeDTO) -> CGPoint {
+    /// pending 是本地 durable intent，dragTransient 只是当前手势帧。
+    private func stableWorldPosition(for node: GraphNodeDTO) -> CGPoint {
         state.pendingPositions[node.nodeId]
             ?? CGPoint(x: node.layout.x, y: node.layout.y)
     }
 
     private func point(for node: GraphNodeDTO) -> CGPoint {
-        geometry.screenPoint(from: normalizedPosition(for: node))
+        geometry.screenPoint(from: worldPosition(for: node))
     }
 
     private func containsNode(at location: CGPoint, viewportOffset: CGSize) -> Bool {
         state.snapshot?.nodes.contains {
-            geometry.visualHitRect(at: normalizedPosition(for: $0), viewportOffset: viewportOffset).contains(location)
+            geometry.visualHitRect(at: worldPosition(for: $0), viewportOffset: viewportOffset).contains(location)
         } ?? false
     }
 
     private func newCanvasPanSession(startLocation: CGPoint) -> CanvasPanSession {
         geometry.beginCanvasPanSession(
             startLocation: startLocation,
-            stableNormalizedPositions: stableNormalizedPositions,
+            stableWorldPositions: stableWorldPositions,
             initialViewportOffset: committedCanvasOffset
         )
+    }
+
+    private func beginNodeDrag() {
+        nodeAutoPanLastTime = nil
+    }
+
+    private func viewportOffsetForNodeDrag(location: CGPoint, time: Date) -> CGSize {
+        let elapsed = nodeAutoPanLastTime.map { time.timeIntervalSince($0) } ?? 0
+        nodeAutoPanLastTime = time
+        let delta = geometry.edgeAutoPanDelta(at: location, elapsed: elapsed)
+        committedCanvasOffset = CGSize(width: committedCanvasOffset.width + delta.width,
+                                       height: committedCanvasOffset.height + delta.height)
+        return committedCanvasOffset
+    }
+
+    private func updateNodeDrag(_ nodeId: String, visualCenter: CGPoint, location: CGPoint, time: Date) {
+        let offset = viewportOffsetForNodeDrag(location: location, time: time)
+        let graphPoint = geometry.graphPoint(fromVisual: visualCenter, viewportOffset: offset)
+        onNodeDragChanged(nodeId, geometry.worldPoint(from: graphPoint))
+    }
+
+    private func endNodeDrag(_ nodeId: String, visualCenter: CGPoint, location: CGPoint, time: Date) {
+        let offset = viewportOffsetForNodeDrag(location: location, time: time)
+        nodeAutoPanLastTime = nil
+        let graphPoint = geometry.graphPoint(fromVisual: visualCenter, viewportOffset: offset)
+        onNodeDragEnded(nodeId, geometry.worldPoint(from: graphPoint))
     }
 
     private var canvasPanGesture: some Gesture {
@@ -272,10 +307,8 @@ struct QuestionGraphView: View {
                 let session = canvasPanSession ?? newCanvasPanSession(startLocation: value.startLocation)
                 canvasPanSession = nil
                 guard session.ownsCanvas else { return }
-                let proposed = CGSize(width: session.initialViewportOffset.width + value.translation.width,
-                                      height: session.initialViewportOffset.height + value.translation.height)
-                committedCanvasOffset = geometry.clampedViewportOffset(proposed: proposed,
-                                                                        nodeCenters: session.constraintCenters)
+                committedCanvasOffset = CGSize(width: session.initialViewportOffset.width + value.translation.width,
+                                               height: session.initialViewportOffset.height + value.translation.height)
             }
     }
 }
