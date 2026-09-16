@@ -24,9 +24,9 @@ func sampleSnapshot(graphId: String = "g1", revision: Int = 1, roundId: String =
         "revision": revision, "center_node_id": "n0",
         "nodes": [
             ["node_id": "n0", "kind": "CENTER", "title": "Redis过期删除策略", "body_markdown": "问题正文", "node_revision": 1,
-             "layout": ["x": 0.5, "y": 0.5, "revision": 1]],
+             "layout": ["x": 0, "y": 0, "revision": 1]],
             ["node_id": "n1", "kind": "EXPLANATION", "title": "惰性与定期", "body_markdown": "解释原文", "node_revision": 1,
-             "layout": ["x": 0.7, "y": 0.4, "revision": 1]],
+             "layout": ["x": 200, "y": -70, "revision": 1]],
         ],
     ])
 }
@@ -44,6 +44,66 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(st.snapshot?.centerNodeId, "n0")
     }
 
+    func testSnapshotParentPersistsThroughDurableCacheReload() async {
+        var payload = sampleSnapshot()
+        guard case .array(var nodes)? = payload["nodes"], case .object(var child) = nodes[1] else {
+            return XCTFail("测试快照格式错误")
+        }
+        child["parent_node_id"] = .string("n0")
+        nodes[1] = .object(child)
+        payload["nodes"] = .array(nodes)
+        _ = await store.applySnapshot(payload: payload, messageId: "parent-snapshot")
+        let restored = await store.cachedGraphState()
+        XCTAssertEqual(restored.snapshot?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId, "n0")
+    }
+
+    func testLegacyNodesCacheMigratesAndAcceptsParentSnapshot() async {
+        let path = NSTemporaryDirectory() + "legacy-parent-\(UUID().uuidString).sqlite"
+        do {
+            let legacy = try XCTUnwrap(SQLiteDB(path: path))
+            try legacy.exec("CREATE TABLE nodes_cache(node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, owner_graph_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL, body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL, x_norm REAL NOT NULL, y_norm REAL NOT NULL, layout_revision INTEGER NOT NULL, locally_deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)")
+            try legacy.exec("INSERT INTO nodes_cache VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", ["n1", "g1", "g1", "EXPLANATION", "旧解释", "旧正文", 1, 0.7, 0.4, 1, 0, 0.0])
+        } catch { return XCTFail("构造旧缓存失败: \(error)") }
+        let migrated = ClientStore(dbPath: path)
+        var payload = sampleSnapshot()
+        guard case .array(var nodes)? = payload["nodes"], case .object(var child) = nodes[1] else {
+            return XCTFail("测试快照格式错误")
+        }
+        child["parent_node_id"] = .string("n0")
+        nodes[1] = .object(child)
+        payload["nodes"] = .array(nodes)
+        _ = await migrated.applySnapshot(payload: payload, messageId: "legacy-parent-snapshot")
+        let restored = await migrated.cachedGraphState()
+        XCTAssertEqual(restored.snapshot?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId, "n0")
+    }
+
+    func testLegacyMoveOutboxMigratesToWorldCoordinates() async {
+        let path = NSTemporaryDirectory() + "legacy-outbox-\(UUID().uuidString).sqlite"
+        do {
+            let legacy = try XCTUnwrap(SQLiteDB(path: path))
+            try legacy.exec("CREATE TABLE nodes_cache(node_id TEXT PRIMARY KEY, graph_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body_markdown TEXT NOT NULL, node_revision INTEGER NOT NULL, x_norm REAL NOT NULL, y_norm REAL NOT NULL, layout_revision INTEGER NOT NULL, locally_deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)")
+            try legacy.exec("CREATE TABLE outbox(outbox_id TEXT PRIMARY KEY, message_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, entity_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, state TEXT NOT NULL DEFAULT 'PENDING')")
+            let payload = "{\"command_id\":\"cmd-legacy\",\"kind\":\"MOVE_NODE\",\"graph_id\":\"g1\",\"payload\":{\"node_id\":\"n1\",\"x_norm\":0.7,\"y_norm\":0.4,\"base_layout_revision\":1}}"
+            try legacy.exec("INSERT INTO outbox(outbox_id,message_id,kind,entity_id,payload_json,created_at,state) VALUES (?,?,?,?,?,?,?)",
+                            ["o1", "m1", "MOVE_NODE", "n1", payload, 0.0, "PENDING"])
+        } catch { return XCTFail("构造旧 outbox 失败: \(error)") }
+
+        let migrated = ClientStore(dbPath: path)
+        let outbox = await migrated.pendingOutbox()
+        let payload = try? XCTUnwrap(outbox.first?["payload_json"] as? String)
+        XCTAssertNotNil(payload)
+        let json = (payload ?? "").data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let move = json?["payload"] as? [String: Any]
+        XCTAssertNil(move?["x_norm"])
+        XCTAssertNil(move?["y_norm"])
+        guard let x = (move?["x_world"] as? NSNumber)?.doubleValue,
+              let y = (move?["y_world"] as? NSNumber)?.doubleValue else {
+            return XCTFail("旧 MOVE_NODE 未转换为 world 坐标")
+        }
+        XCTAssertEqual(x, 200, accuracy: 0.000001)
+        XCTAssertEqual(y, -70, accuracy: 0.000001)
+    }
+
     func testInboxDedup() async {
         _ = await store.applySnapshot(payload: sampleSnapshot(), messageId: "m-dup")
         _ = await store.applySnapshot(payload: sampleSnapshot(revision: 2), messageId: "m-dup")
@@ -57,10 +117,11 @@ final class StoreTests: XCTestCase {
         let ok = await store.applyPatch(payload: jval([
             "graph_id": "g1", "base_revision": 1, "target_revision": 2,
             "ops": [["op": "ADD_NODE", "node": ["node_id": "n2", "kind": "TEMPORARY", "title": "临时",
-                    "body_markdown": "b", "node_revision": 1, "layout": ["x": 0.3, "y": 0.3, "revision": 1]]]],
+                    "parent_node_id": "n1", "body_markdown": "b", "node_revision": 1, "layout": ["x": 0.3, "y": 0.3, "revision": 1]]]],
         ]), messageId: "m2")
         if case .applied(let dto) = ok {
             XCTAssertEqual(dto?.nodes.count, 3)
+            XCTAssertEqual(dto?.nodes.first(where: { $0.nodeId == "n2" })?.parentNodeId, "n1")
         } else { XCTFail("应 applied") }
         // base mismatch → 不盲 apply
         let bad = await store.applyPatch(payload: jval([
@@ -116,8 +177,8 @@ final class StoreTests: XCTestCase {
 final class ProtocolTests: XCTestCase {
     func testEnvelopeDecode() throws {
         let raw = """
-        {"v":1,"message_id":"m1","type":"WELCOME","session_epoch":"e1","sent_at":"2026-09-08T12:34:56.123Z",
-         "payload":{"selected_protocol":1,"daemon_id":"mac-A","server_seq":3,"active":{"graph_id":"g1","round_id":"r1"}}}
+        {"v":3,"message_id":"m1","type":"WELCOME","session_epoch":"e1","sent_at":"2026-09-08T12:34:56.123Z",
+         "payload":{"selected_protocol":3,"daemon_id":"mac-A","server_seq":3,"active":{"graph_id":"g1","round_id":"r1"}}}
         """
         let env = try MessageCoder.decode(raw)
         XCTAssertEqual(env.type, "WELCOME")
@@ -127,7 +188,7 @@ final class ProtocolTests: XCTestCase {
     func testUnknownTypeDecodableAndIgnoredUpstream() {
         // M-2.7: 未知 type 记录并忽略, 不 crash —— 解码层应成功返回, 由 SyncEngine 上层忽略
         let raw = """
-        {"v":1,"message_id":"m2","type":"WHATEVER_NEW","session_epoch":null,"sent_at":"x","payload":{}}
+        {"v":3,"message_id":"m2","type":"WHATEVER_NEW","session_epoch":null,"sent_at":"x","payload":{}}
         """
         let env = try? MessageCoder.decode(raw)
         XCTAssertNotNil(env)
@@ -152,37 +213,161 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(snap?.centerNodeId, "n0")
         XCTAssertEqual(snap?.nodes.count, 2)
     }
+
+    func testGraphCodecDecodesOptionalParentAndOldPayload() {
+        let old = GraphCodec.snapshot(from: sampleSnapshot())
+        XCTAssertNil(old?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId)
+        var payload = sampleSnapshot()
+        guard case .array(var nodes)? = payload["nodes"], case .object(var child) = nodes[1] else {
+            return XCTFail("测试快照格式错误")
+        }
+        child["parent_node_id"] = .string("n0")
+        nodes[1] = .object(child)
+        payload["nodes"] = .array(nodes)
+        XCTAssertEqual(GraphCodec.snapshot(from: payload)?.nodes.first(where: { $0.nodeId == "n1" })?.parentNodeId, "n0")
+    }
 }
 
 final class TopologyLogicTests: XCTestCase {
-    func testGraphCanvasRoundTripUsesSameContentRect() {
+    func testGraphCanvasRoundTripUsesWorldCoordinates() {
         let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
-        let normalized = CGPoint(x: 0.73, y: 0.21)
-        let screen = geometry.screenPoint(from: normalized)
-        let roundTrip = geometry.normalizedPoint(from: screen)
-        XCTAssertEqual(roundTrip.x, normalized.x, accuracy: 0.000001)
-        XCTAssertEqual(roundTrip.y, normalized.y, accuracy: 0.000001)
+        let world = CGPoint(x: 273, y: -141)
+        let screen = geometry.screenPoint(from: world)
+        let roundTrip = geometry.worldPoint(from: screen)
+        XCTAssertEqual(roundTrip.x, world.x, accuracy: 0.000001)
+        XCTAssertEqual(roundTrip.y, world.y, accuracy: 0.000001)
         XCTAssertTrue(geometry.contentRect.contains(screen))
     }
 
-    func testGraphCanvasClampsOutsideViewportToNormalizedBounds() {
+    func testGraphCanvasDoesNotClampOutsideViewport() {
         let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
-        let minPoint = geometry.normalizedPoint(from: CGPoint(x: -100, y: -100))
-        let maxPoint = geometry.normalizedPoint(from: CGPoint(x: 5000, y: 5000))
-        XCTAssertEqual(minPoint, CGPoint.zero)
-        XCTAssertEqual(maxPoint, CGPoint(x: 1, y: 1))
+        let minPoint = geometry.worldPoint(from: CGPoint(x: -100, y: -100))
+        let maxPoint = geometry.worldPoint(from: CGPoint(x: 5000, y: 5000))
+        XCTAssertLessThan(minPoint.x, 0)
+        XCTAssertLessThan(minPoint.y, 0)
+        XCTAssertGreaterThan(maxPoint.x, 0)
+        XCTAssertGreaterThan(maxPoint.y, 0)
     }
 
-    func testRadialSlotDeterministicAndBounded() {
+    func testCanvasViewportTransformIsLocalUnboundedAndReversible() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let offset = CGSize(width: 99_999, height: -99_999)
+        let graph = geometry.screenPoint(from: CGPoint(x: 370, y: -120))
+        let visual = geometry.visualPoint(from: graph, viewportOffset: offset)
+        let restored = geometry.graphPoint(fromVisual: visual, viewportOffset: offset)
+        XCTAssertEqual(restored.x, graph.x, accuracy: 0.000001)
+        XCTAssertEqual(restored.y, graph.y, accuracy: 0.000001)
+        XCTAssertTrue(geometry.visualHitRect(at: CGPoint(x: 370, y: -120), viewportOffset: offset).contains(visual))
+    }
+
+    func testNodeStartPanOwnershipStaysBlockedAfterNodeMovesAway() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let initialNodePosition = CGPoint.zero
+        let startLocation = geometry.screenPoint(from: initialNodePosition)
+        let session = geometry.beginCanvasPanSession(
+            startLocation: startLocation,
+            stableWorldPositions: [initialNodePosition],
+            initialViewportOffset: .zero
+        )
+        let movedNodePosition = CGPoint(x: 420, y: 0)
+        let incorrectPerFrameResult = geometry.beginCanvasPanSession(
+            startLocation: startLocation,
+            stableWorldPositions: [movedNodePosition],
+            initialViewportOffset: .zero
+        )
+
+        XCTAssertFalse(session.ownsCanvas)
+        XCTAssertTrue(incorrectPerFrameResult.ownsCanvas)
+        XCTAssertEqual(session.initialViewportOffset, .zero)
+    }
+
+    func testCanvasPanRemainsUnboundedRegardlessOfNodePositions() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let world = CGPoint(x: -50_000, y: 77_000)
+        let graph = geometry.screenPoint(from: world)
+        let offset = CGSize(width: 250_000, height: -125_000)
+        XCTAssertEqual(geometry.graphPoint(fromVisual: geometry.visualPoint(from: graph, viewportOffset: offset), viewportOffset: offset), graph)
+    }
+
+    func testCanvasPanChangesOnlyLocalViewportOffset() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let stablePositions = [CGPoint(x: -200, y: 100), CGPoint(x: 300, y: -220)]
+        let committed = CGSize(width: 40, height: -30)
+        let blankStart = CGPoint(x: 10, y: 10)
+        let session = geometry.beginCanvasPanSession(
+            startLocation: blankStart,
+            stableWorldPositions: stablePositions,
+            initialViewportOffset: committed
+        )
+        let proposed = CGSize(width: session.initialViewportOffset.width + 120,
+                              height: session.initialViewportOffset.height + 80)
+        let panned = proposed
+
+        XCTAssertTrue(session.ownsCanvas)
+        XCTAssertNotEqual(panned, committed)
+        XCTAssertEqual(session.initialViewportOffset, committed)
+    }
+
+    func testPanOffsetIsRemovedBeforeNodeDragWritesWorldPosition() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let graphStart = geometry.screenPoint(from: CGPoint(x: -120, y: 80))
+        let graphEnd = CGPoint(x: graphStart.x + 96, y: graphStart.y - 54)
+        let offset = CGSize(width: 137, height: -93)
+
+        let unpanned = geometry.worldPoint(from: graphEnd)
+        let visualEnd = geometry.visualPoint(from: graphEnd, viewportOffset: offset)
+        let panned = geometry.worldPoint(from: geometry.graphPoint(fromVisual: visualEnd, viewportOffset: offset))
+
+        XCTAssertEqual(panned.x, unpanned.x, accuracy: 0.000001)
+        XCTAssertEqual(panned.y, unpanned.y, accuracy: 0.000001)
+    }
+
+    func testVisualHitRectMovesWithViewportOffsetIncludingCenter() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let centerWorld = CGPoint.zero
+        let originalCenter = geometry.screenPoint(from: centerWorld)
+        let offset = CGSize(width: 160, height: -120)
+        let visualCenter = geometry.visualPoint(from: originalCenter, viewportOffset: offset)
+        let visualHitRect = geometry.visualHitRect(at: centerWorld, viewportOffset: offset)
+
+        XCTAssertFalse(visualHitRect.contains(originalCenter))
+        XCTAssertTrue(visualHitRect.contains(visualCenter))
+    }
+
+    func testResolvedParentPreservesVisibleHierarchyAndFallsBackToCenter() {
+        let center = GraphNodeDTO(nodeId: "c", kind: .CENTER, title: "题目", bodyMarkdown: "q", nodeRevision: 1, layout: LayoutDTO(x: 0.5, y: 0.5, revision: 1))
+        let parent = GraphNodeDTO(nodeId: "a", parentNodeId: "c", kind: .EXPLANATION, title: "A", bodyMarkdown: "a", nodeRevision: 1, layout: LayoutDTO(x: 0.7, y: 0.5, revision: 1))
+        let child = GraphNodeDTO(nodeId: "b", parentNodeId: "a", kind: .EXPLANATION, title: "B", bodyMarkdown: "b", nodeRevision: 1, layout: LayoutDTO(x: 0.8, y: 0.6, revision: 1))
+        let hierarchy = GraphSnapshotDTO(graphId: "g", questionKey: "q", roundId: nil, revision: 1, centerNodeId: "c", nodes: [center, parent, child])
+        XCTAssertEqual(hierarchy.resolvedParent(of: child)?.nodeId, "a")
+        let missingParent = GraphNodeDTO(nodeId: "orphan", parentNodeId: "deleted", kind: .EXPLANATION, title: "孤儿", bodyMarkdown: "o", nodeRevision: 1, layout: LayoutDTO(x: 0.2, y: 0.2, revision: 1))
+        let fallback = GraphSnapshotDTO(graphId: "g", questionKey: "q", roundId: nil, revision: 1, centerNodeId: "c", nodes: [center, missingParent])
+        XCTAssertEqual(fallback.resolvedParent(of: missingParent)?.nodeId, "c")
+    }
+
+    func testRadialSlotDeterministicAndExpandsOutward() {
         let p0 = TopologyLayout.slot(index: 0)
         let p0b = TopologyLayout.slot(index: 0)
         XCTAssertEqual(p0.x, p0b.x)
         XCTAssertEqual(p0.y, p0b.y)
         for i in 0..<40 {
             let p = TopologyLayout.slot(index: i)
-            XCTAssertTrue((0.0...1.0).contains(p.x))
-            XCTAssertTrue((0.0...1.0).contains(p.y))
+            XCTAssertTrue(p.x.isFinite)
+            XCTAssertTrue(p.y.isFinite)
         }
+        let firstRadius = hypot(TopologyLayout.slot(index: 0).x, TopologyLayout.slot(index: 0).y)
+        let laterRadius = hypot(TopologyLayout.slot(index: 36).x, TopologyLayout.slot(index: 36).y)
+        XCTAssertGreaterThan(laterRadius, firstRadius)
+    }
+
+    func testEdgeAutoPanMovesCameraOppositeToDraggedEdge() {
+        let geometry = GraphCanvasGeometry(viewportSize: CGSize(width: 1024, height: 768))
+        let delta = geometry.edgeAutoPanDelta(
+            at: CGPoint(x: geometry.contentRect.maxX - 1, y: geometry.contentRect.midY),
+            elapsed: 1.0 / 60.0
+        )
+        XCTAssertLessThan(delta.width, 0)
+        XCTAssertEqual(delta.height, 0, accuracy: 0.000001)
     }
 
     func testMarkdownParserBlocks() {

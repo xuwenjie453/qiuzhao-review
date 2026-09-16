@@ -213,7 +213,7 @@ final class AppSessionModel: ObservableObject {
         next.pendingPositions = graphState.pendingPositions
 
         // A pending move is complete only when the canonical graph contains
-        // the same normalized coordinate. Older snapshots must not make the
+        // the same world coordinate. Older snapshots must not make the
         // node jump back during the ACK/patch gap.
         if let snapshot = incoming.snapshot {
             for (nodeId, pending) in graphState.pendingPositions {

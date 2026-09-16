@@ -4,8 +4,8 @@ import { WsTestClient } from './ws-test-client.mjs';
 async function handshake(port, host) {
   const client = new WsTestClient();
   await client.connect(port, '/bridge');
-  client.sendJson({ v: 1, message_id: crypto.randomUUID(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(),
-    payload: { device_id: 'lan-test', client_build: '1.0.0', supported_protocols: [1], last_server_seq: 0, cached_graph: null } });
+  client.sendJson({ v: 3, message_id: crypto.randomUUID(), type: 'HELLO', session_epoch: null, sent_at: new Date().toISOString(),
+    payload: { device_id: 'lan-test', client_build: '3.0.0', supported_protocols: [3], last_server_seq: 0, cached_graph: null } });
   const w = await client.waitJson((m) => m.type === 'WELCOME', 4000);
   console.log(`OK ${host}:${port} → welcome epoch ${w.payload.session_epoch.slice(0, 8)}`);
   client.close();

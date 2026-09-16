@@ -1,9 +1,10 @@
 // DualEnd-Mac 共享常量、工具、错误码。零第三方依赖。
 import { createHash, randomUUID } from 'node:crypto';
 
-export const PROTOCOL_VERSION = 2;
-export const SUPPORTED_PROTOCOLS = [1, 2];
-export const APP_BUILD = '1.0.0';
+export const PROTOCOL_VERSION = 3;
+// 保留旧版本只为了在握手阶段返回明确的 UPGRADE_REQUIRED；WORLD_V1 图不向旧端下发。
+export const SUPPORTED_PROTOCOLS = [1, 2, 3];
+export const APP_BUILD = '3.0.0';
 
 // M-6.4 最小防护限额（可配置）
 export const LIMITS = {
