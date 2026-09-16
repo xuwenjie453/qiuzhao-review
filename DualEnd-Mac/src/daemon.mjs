@@ -23,8 +23,8 @@ export class Daemon extends EventEmitter {
     this.state = 'STARTING';
     this.store = null;
     this.svc = null;
-    this.http = null;          // localhost 控制 API(仅 127.0.0.1)
-    this.bridgeHttp = null;    // WebSocket bridge(0.0.0.0, 供 iPad 局域网连接)
+    this.http = null;
+    this.bridgeHttp = null;
     this.ws = null;
     this.bonjour = null;
     this.sessions = new Set();
@@ -34,7 +34,6 @@ export class Daemon extends EventEmitter {
     this.daemonId = null;
   }
 
-  // ---- 单实例锁 ----
   tryLock() {
     mkdirSync(dirname(this.lockPath), { recursive: true });
     if (existsSync(this.lockPath)) {
@@ -50,6 +49,7 @@ export class Daemon extends EventEmitter {
     process.on('exit', () => { try { rmSync(this.lockPath, { force: true }); } catch { /* noop */ } });
     return true;
   }
+
   pidAlive(pid) {
     try { process.kill(pid, 0); return true; } catch { return false; }
   }
@@ -72,14 +72,12 @@ export class Daemon extends EventEmitter {
       this.emit('safe-mode', ic);
       return true;
     }
-    // 1) localhost 控制 API —— M-6.4: 只绑定 loopback
     this.http = createServer();
     const control = new LocalControl({ daemon: this, server: this.http });
     await new Promise((resolve) => this.http.listen(0, '127.0.0.1', resolve));
     this.controlPort = this.http.address().port;
-    // 2) WebSocket bridge —— 监听所有接口(局域网可达), Bonjour 注册实际端口
+
     this.bridgeHttp = createServer();
-    // 诊断: 打印连接收到的原始字节前80(hex), 排查数据是否到达
     this.bridgeHttp.on('connection', (sock) => {
       sock.once('data', (d) => this.log.info?.('raw rx:', d.subarray(0, 80).toString('hex')));
     });
@@ -95,15 +93,12 @@ export class Daemon extends EventEmitter {
     const wantBridgePort = Number(process.env.DUALEND_BRIDGE_PORT || 0);
     await new Promise((resolve) => this.bridgeHttp.listen(wantBridgePort, '0.0.0.0', resolve));
     this.bridgePort = this.bridgeHttp.address().port;
-    // CLI/status 读取同一份运行时锁；端口在两个 listener 都 ready 后一次性写入，
-    // 避免 CLI 打印过期或把 bridge_port 错写成 control_port。
     writeFileSync(this.lockPath, JSON.stringify({
       pid: process.pid,
       started_at: new Date().toISOString(),
       control_port: this.controlPort,
       bridge_port: this.bridgePort,
     }));
-    // Bonjour 注册真实监听端口
     this.bonjour = new BonjourAdvertiser({ daemonId: this.daemonId, port: this.bridgePort, logger: this.log });
     this.bonjour.start();
     this.state = 'READY';
@@ -113,7 +108,6 @@ export class Daemon extends EventEmitter {
     return true;
   }
 
-  /** Agent/localhost 命令入口(经 command service; 禁止其它路径直写 DB) */
   agentCommand(payload) {
     const kind = payload.kind;
     const svc = this.svc;
@@ -124,7 +118,6 @@ export class Daemon extends EventEmitter {
       case 'question.close':
         result = svc.close(payload); break;
       case 'graph.add-node':
-        // 业务 kind(EXPLANATION/TEMPORARY) 放 node_kind, 避免与命令名 kind 冲突
         result = svc.addNode({ ...payload, kind: payload.node_kind }); break;
       case 'node.rename':
         result = svc.renameNode(payload); break;
@@ -141,7 +134,6 @@ export class Daemon extends EventEmitter {
     return result;
   }
 
-  /** 对全部已连接 iPad: 由 canonical 结果生成 GRAPH_PATCH 广播 */
   broadcastGraphChange(graphId, result) {
     if (this.sessions.size === 0) return;
     const graphIds = result.affected_graph_ids ?? [graphId];
@@ -159,11 +151,10 @@ export class Daemon extends EventEmitter {
     }
   }
 
-  /** 把 command 结果映射为增量 patch ops (title/move/delete/add 后由 caller 用 snapshot 或 patch) */
   buildPatch(graphId, result, targetRevision) {
     if (!result) return null;
     const baseRevision = Math.max(1, (targetRevision ?? 1) - 1);
-    if (result.created !== undefined) { // question.open: 整图 snapshot 更好
+    if (result.created !== undefined) {
       const round = this.svc.activeRound();
       const snap = this.svc.snapshotPayload(graphId, round?.graph_id === graphId ? round.round_id : null);
       for (const s of this.sessions) s.emitGraph('snapshot', snap);
@@ -171,13 +162,19 @@ export class Daemon extends EventEmitter {
     }
     const ops = [];
     if (result.node_id && result.node_revision !== undefined && result.kind) {
-      // add-node: 需要完整 node 内容
       const n = this.svc.nodeGet(result.node_id);
       const l = this.store.prepare('SELECT * FROM layouts WHERE node_id=?').get(result.node_id);
       ops.push({ op: 'ADD_NODE', node: {
-        node_id: n.node_id, owner_graph_id: n.graph_id, visibility: n.graph_id === graphId ? 'OWN' : 'INHERITED',
-        kind: n.kind, title: n.title, body_markdown: n.body_markdown,
-        node_revision: n.node_revision, layout: { x: l.x_norm, y: l.y_norm, revision: l.layout_revision } } });
+        node_id: n.node_id,
+        owner_graph_id: n.graph_id,
+        visibility: n.graph_id === graphId ? 'OWN' : 'INHERITED',
+        kind: n.kind,
+        title: n.title,
+        body_markdown: n.body_markdown,
+        parent_node_id: n.parent_node_id ?? null,
+        node_revision: n.node_revision,
+        layout: { x: l.x_norm, y: l.y_norm, revision: l.layout_revision },
+      } });
     } else if (result.node_id && result.title !== undefined) {
       ops.push({ op: 'UPDATE_TITLE', node_id: result.node_id, title: result.title, node_revision: result.node_revision });
     } else if (result.node_id && result.x_norm !== undefined) {
